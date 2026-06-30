@@ -1,0 +1,21 @@
+services:
+  contextauthlab-server-init:
+    volumes:
+      - ${DATA_VOLUME:-/var/lib/contextauthlab/data/paper}:/data/paper:rw
+      - ${LOG_VOLUME:-/var/log/contextauthlab}:/app/logs:rw
+
+  contextauthlab-server:
+    image: contextauthlab/server:${VERSION:-latest}
+    pull_policy: missing
+    volumes:
+      - ${DATA_VOLUME:-/var/lib/contextauthlab/data/paper}:/data/paper:rw
+      - ${LOG_VOLUME:-/var/log/contextauthlab}:/app/logs:rw
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+        reservations:
+          memory: 256M
+          cpus: "0.25"
+    restart: always

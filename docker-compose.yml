@@ -1,0 +1,63 @@
+x-contextauthlab-server-image: &contextauthlab-server-image
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: contextauthlab/server:${VERSION:-latest}
+
+x-contextauthlab-server-volumes: &contextauthlab-server-volumes
+  - ${DATA_VOLUME:-./data/paper}:/data/paper:rw
+  - ${LOG_VOLUME:-./logs}:/app/logs:rw
+
+services:
+  contextauthlab-server-init:
+    <<: *contextauthlab-server-image
+    container_name: cca-server-init
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "mkdir -p /data/paper /app/logs && if [ \"${SERVER_FIX_PERMISSIONS:-true}\" = \"true\" ]; then if [ \"${SERVER_CHOWN_RECURSIVE:-true}\" = \"true\" ]; then chown -R ${SERVER_CONTAINER_UID:-1000}:${SERVER_CONTAINER_GID:-1000} /data/paper /app/logs && chmod -R u+rwX,g+rwX /data/paper /app/logs; else chown ${SERVER_CONTAINER_UID:-1000}:${SERVER_CONTAINER_GID:-1000} /data/paper /app/logs && chmod u+rwX,g+rwX /data/paper /app/logs; fi; fi"
+    volumes: *contextauthlab-server-volumes
+    restart: "no"
+
+  contextauthlab-server:
+    <<: *contextauthlab-server-image
+    container_name: cca-server
+    restart: unless-stopped
+    depends_on:
+      contextauthlab-server-init:
+        condition: service_completed_successfully
+    ports:
+      - "${SERVER_BIND:-127.0.0.1}:${SERVER_PORT:-8000}:8000"
+    environment:
+      SERVER_DATA_DIR: /data/paper
+      SERVER_LOG_DIR: /app/logs
+      SERVER_RULES_FILE: ${SERVER_RULES_FILE:-/data/paper/rules.json}
+      SERVER_FIX_PERMISSIONS: ${SERVER_FIX_PERMISSIONS:-true}
+      SERVER_CHOWN_RECURSIVE: ${SERVER_CHOWN_RECURSIVE:-true}
+      APP_UID: ${SERVER_CONTAINER_UID:-1000}
+      APP_GID: ${SERVER_CONTAINER_GID:-1000}
+      SERVER_STUDY_SALT: ${SERVER_STUDY_SALT:-Continuous_Authentication}
+      RULES_VERSION: ${RULES_VERSION:-1}
+      INGEST_REQUIRE_AUTH: ${INGEST_REQUIRE_AUTH:-false}
+      SERVER_MIN_FREE_BYTES: ${SERVER_MIN_FREE_BYTES:-10485760}
+      TIME_SYNC_REGION: ${TIME_SYNC_REGION:-CN}
+      TIME_SYNC_NTP_SERVERS: ${TIME_SYNC_NTP_SERVERS:-ntp.aliyun.com,ntp.tencent.com,0.cn.pool.ntp.org,1.cn.pool.ntp.org,2.cn.pool.ntp.org,3.cn.pool.ntp.org}
+      TIME_SYNC_MAX_ACCEPTABLE_RTT_MILLIS: ${TIME_SYNC_MAX_ACCEPTABLE_RTT_MILLIS:-3000}
+      TZ: ${TZ:-UTC}
+    volumes: *contextauthlab-server-volumes
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    tmpfs:
+      - /tmp

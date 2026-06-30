@@ -1,0 +1,47 @@
+# Python caches / virtualenvs
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.venv/
+venv/
+env/
+
+# Local runtime data, logs, and generated artifacts
+data/paper/
+logs/
+artifacts/*.tar
+artifacts/*.tar.sha256
+tools/*_result.json
+*.log
+
+# Local environment files; keep examples tracked
+.env
+.env.local
+.env.*.local
+!.env.example
+!.env.server.example
+
+# Docker / compose local overrides
+docker-compose.override.yml
+
+# IDEs and editors
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+*~
+*.swp
+*.swo
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini
