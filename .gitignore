@@ -1,4 +1,4 @@
-# Python caches / virtualenvs
+# Python caches / virtual environments
 __pycache__/
 *.py[cod]
 *$py.class
@@ -13,14 +13,6 @@ htmlcov/
 venv/
 env/
 
-# Local runtime data, logs, and generated artifacts
-data/paper/
-logs/
-artifacts/*.tar
-artifacts/*.tar.sha256
-tools/*_result.json
-*.log
-
 # Local environment files; keep examples tracked
 .env
 .env.local
@@ -28,10 +20,26 @@ tools/*_result.json
 !.env.example
 !.env.server.example
 
+# Runtime data, logs, and local backups
+data/paper/
+logs/
+backups/
+*.log
+
+# Generated service artifacts
+artifacts/*.tar
+artifacts/*.tar.sha256
+artifacts/*.tgz
+artifacts/*.tgz.sha256
+tools/*_result.json
+tools/load_test_result.json
+
 # Docker / compose local overrides
 docker-compose.override.yml
+.docker/
 
-# IDEs and editors
+# Local agent/editor state
+.claude/
 .idea/
 .vscode/
 *.iml
