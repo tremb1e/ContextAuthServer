@@ -2,7 +2,7 @@ x-cca-server-image: &cca-server-image
   build:
     context: .
     dockerfile: Dockerfile
-  image: contextauthlab/server:${VERSION:-latest}
+  image: contextauth/server:${VERSION:-latest}
 
 x-cca-server-volumes: &cca-server-volumes
   - ${DATA_VOLUME:-./data/paper}:/data/paper:rw

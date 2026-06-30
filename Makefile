@@ -4,7 +4,7 @@ build:
 	docker compose build
 
 build-server-image:
-	docker build -t contextauthlab/server:$${VERSION:-latest} .
+	docker build -t contextauth/server:$${VERSION:-latest} .
 
 up:
 	docker compose up -d
@@ -13,13 +13,13 @@ down:
 	docker compose down
 
 restart:
-	docker compose restart contextauthlab-server
+	docker compose restart contextauth-server
 
 logs:
-	docker compose logs -f contextauthlab-server
+	docker compose logs -f contextauth-server
 
 shell:
-	docker compose exec contextauthlab-server sh
+	docker compose exec contextauth-server sh
 
 health:
 	curl -fsS http://127.0.0.1:8000/health
@@ -32,7 +32,7 @@ sample-ingest:
 
 backup:
 	mkdir -p backups
-	tar -czf backups/contextauthlab-$$(date +%Y%m%d-%H%M%S).tar.gz data/paper logs
+	tar -czf backups/contextauth-$$(date +%Y%m%d-%H%M%S).tar.gz data/paper logs
 
 prune-data:
 	@echo "Manual retention review only; prune tool is not shipped in this prototype."

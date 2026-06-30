@@ -1,15 +1,15 @@
 services:
-  contextauthlab-server-init:
+  contextauth-server-init:
     volumes:
-      - ${DATA_VOLUME:-/var/lib/contextauthlab/data/paper}:/data/paper:rw
-      - ${LOG_VOLUME:-/var/log/contextauthlab}:/app/logs:rw
+      - ${DATA_VOLUME:-/var/lib/contextauth/data/paper}:/data/paper:rw
+      - ${LOG_VOLUME:-/var/log/contextauth}:/app/logs:rw
 
-  contextauthlab-server:
-    image: contextauthlab/server:${VERSION:-latest}
+  contextauth-server:
+    image: contextauth/server:${VERSION:-latest}
     pull_policy: missing
     volumes:
-      - ${DATA_VOLUME:-/var/lib/contextauthlab/data/paper}:/data/paper:rw
-      - ${LOG_VOLUME:-/var/log/contextauthlab}:/app/logs:rw
+      - ${DATA_VOLUME:-/var/lib/contextauth/data/paper}:/data/paper:rw
+      - ${LOG_VOLUME:-/var/log/contextauth}:/app/logs:rw
     deploy:
       resources:
         limits:

@@ -23,7 +23,7 @@
 | SRV-03 | Privacy checks | Validate schema-level privacy invariants after server secondary scan removal | Reject editable raw text, password-node presence, missing redaction marker, invalid task contract, orphan context-feature event IDs, diagnostics count mismatches, or bad envelope without logging raw payload |
 | SRV-04 | Storage | Store by device_id/date, meta, indexes, by_category, quarantine | Safe path resolution prevents traversal; repeated identical batch IDs are idempotent, conflicting duplicates are rejected without overwrite |
 | SRV-05 | Logging/metrics | JSON lines logs and Prometheus metrics | No full device_id, raw payload, salt, key, or plain IP |
-| DEV-01 | Docker | Server image plus Android APK artifact image; server runs non-root with bind-mounted data/logs | In `ContextAuthLabServer`, `docker build -t contextauthlab/server:latest .` and `tools/test_docker_deployment.sh` pass; in sibling `ContextAuthLabApp`, `make build-app-image` passes after the debug APK exists |
+| DEV-01 | Docker | Server image plus Android APK artifact image; server runs non-root with bind-mounted data/logs | In `ContextAuthServer`, `docker build -t contextauth/server:latest .` and `tools/test_docker_deployment.sh` pass; in sibling `ContextAuthlab`, `make build-app-image` passes after the debug APK exists |
 | DEV-02 | Tests | Android unit, APK build, server pytest, E2E, Docker smoke | Commands in README and Makefile pass in this environment |
 
 Explicitly out of scope: authentication model, context routing model, MoE, training, inference, hidden collection, screenshots, automatic control, gRPC/proto, AES content encryption, anomaly detection, Dashboard/Web UI.

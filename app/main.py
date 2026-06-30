@@ -21,7 +21,7 @@ from .storage import STORE, DuplicateBatchConflict, now_ms
 
 configure_logging()
 
-app = FastAPI(title="ContextAuthLab Server", version="1.0.0")
+app = FastAPI(title="ContextAuth Server", version="1.0.0")
 
 METRICS_REGISTRY = CollectorRegistry()
 INGEST_TOTAL = Counter("ingest_total", "Ingest requests by result", ["result"], registry=METRICS_REGISTRY)

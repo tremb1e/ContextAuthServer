@@ -39,8 +39,8 @@ RUN printf '%s\n' \
 
 COPY app ./app
 COPY main.py ./
-COPY docker-entrypoint.py /usr/local/bin/contextauthlab-entrypoint
-RUN chmod +x /usr/local/bin/contextauthlab-entrypoint \
+COPY docker-entrypoint.py /usr/local/bin/contextauth-entrypoint
+RUN chmod +x /usr/local/bin/contextauth-entrypoint \
     && chown -R appuser:appuser /app
 
 USER root
@@ -50,5 +50,5 @@ VOLUME ["/data/paper"]
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s \
     CMD curl -fsS http://127.0.0.1:8000/ready || exit 1
 
-ENTRYPOINT ["contextauthlab-entrypoint"]
+ENTRYPOINT ["contextauth-entrypoint"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

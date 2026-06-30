@@ -12,7 +12,7 @@
 
 ```bash
 git clone <repo>
-cd ContextAuthLabServer
+cd ContextAuthServer
 cp .env.example .env
 docker compose up -d
 curl http://127.0.0.1:8000/ready
@@ -60,36 +60,36 @@ docker compose up
 Build a local server image for deployment:
 
 ```bash
-docker build -t contextauthlab/server:latest .
-docker image inspect contextauthlab/server:latest
+docker build -t contextauth/server:latest .
+docker image inspect contextauth/server:latest
 ```
 
 Export/import a portable server image:
 
 ```bash
 mkdir -p artifacts
-docker save contextauthlab/server:latest -o artifacts/contextauthlab-server-latest.tar
-(cd artifacts && sha256sum contextauthlab-server-latest.tar > contextauthlab-server-latest.tar.sha256)
+docker save contextauth/server:latest -o artifacts/contextauth-server-latest.tar
+(cd artifacts && sha256sum contextauth-server-latest.tar > contextauth-server-latest.tar.sha256)
 
 # On another server:
-docker load -i contextauthlab-server-latest.tar
-docker run --rm contextauthlab/server:latest id
+docker load -i contextauth-server-latest.tar
+docker run --rm contextauth/server:latest id
 ```
 
 Build the Android APK artifact image from the sibling Android project:
 
 ```bash
-cd /data/paper/sp/app_exp/ContextAuthLabApp
+cd /data/paper/sp/app_exp/ContextAuthlab
 make build-app-image
-docker image inspect contextauthlab/android-app-debug:latest --format '{{.Id}}'
+docker image inspect contextauth/android-app-debug:latest --format '{{.Id}}'
 ```
 
 The Android image is an APK artifact image, not a runnable mobile runtime. To
 extract the APK from a registry-delivered image:
 
 ```bash
-cid=$(docker create contextauthlab/android-app-debug:latest)
-docker cp "$cid":/artifacts/contextauthlab-debug.apk artifacts/contextauthlab-debug.apk
+cid=$(docker create contextauth/android-app-debug:latest)
+docker cp "$cid":/artifacts/contextauth-debug.apk artifacts/contextauth-debug.apk
 docker rm "$cid"
 ```
 
@@ -98,7 +98,7 @@ Single-machine background deployment:
 ```bash
 cp .env.example .env
 docker compose up -d
-docker compose logs -f contextauthlab-server
+docker compose logs -f contextauth-server
 ```
 
 Production override:
@@ -111,11 +111,11 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 ```bash
 docker compose ps
-docker compose logs -f contextauthlab-server
+docker compose logs -f contextauth-server
 curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/ready
-docker compose exec contextauthlab-server sh
-docker compose exec contextauthlab-server sh -c 'id && ls -la /data/paper /app/logs'
+docker compose exec contextauth-server sh
+docker compose exec contextauth-server sh -c 'id && ls -la /data/paper /app/logs'
 ```
 
 If the service fails with `PermissionError: [Errno 13] Permission denied:
@@ -131,17 +131,17 @@ docker compose up -d
 For a manual `docker run` deployment, prepare the host directories yourself:
 
 ```bash
-mkdir -p /var/lib/contextauthlab/data/paper /var/log/contextauthlab
-chown -R 1000:1000 /var/lib/contextauthlab/data/paper /var/log/contextauthlab
-docker run -d --name contextauthlab-server \
+mkdir -p /var/lib/contextauth/data/paper /var/log/contextauth
+chown -R 1000:1000 /var/lib/contextauth/data/paper /var/log/contextauth
+docker run -d --name contextauth-server \
   -p 127.0.0.1:8000:8000 \
   -e SERVER_DATA_DIR=/data/paper \
   -e SERVER_LOG_DIR=/app/logs \
   -e SERVER_RULES_FILE=/data/paper/rules.json \
   -e SERVER_STUDY_SALT=Continuous_Authentication \
-  -v /var/lib/contextauthlab/data/paper:/data/paper:rw \
-  -v /var/log/contextauthlab:/app/logs:rw \
-  contextauthlab/server:latest
+  -v /var/lib/contextauth/data/paper:/data/paper:rw \
+  -v /var/log/contextauth:/app/logs:rw \
+  contextauth/server:latest
 ```
 
 ClockSync troubleshooting:
@@ -164,16 +164,16 @@ cleartext and user CA trust enabled for emulator/lab endpoints such as
 Debug APK build:
 
 ```bash
-cd /data/paper/sp/app_exp/ContextAuthLabApp
+cd /data/paper/sp/app_exp/ContextAuthlab
 JAVA_HOME=/opt/android-studio/jbr ANDROID_HOME=/home/tremb1e/Android/Sdk ./gradlew :android-app:assembleDebug
 mkdir -p artifacts
-cp android-app/build/outputs/apk/debug/android-app-debug.apk artifacts/contextauthlab-debug.apk
+cp android-app/build/outputs/apk/debug/android-app-debug.apk artifacts/contextauth-debug.apk
 ```
 
 Install on a test device:
 
 ```bash
-adb install -r artifacts/contextauthlab-debug.apk
+adb install -r artifacts/contextauth-debug.apk
 ```
 
 After installation, enable AccessibilityService, battery optimization exemption, and notification permission. The app starts collection automatically once required permissions, a valid research `device_id`, and screen/unlock state are ready. Server readiness, ClockSync, and Wi-Fi failures do not block local sampling; failed uploads are queued and replayed according to the Wi-Fi policy. Non-retriable server responses during queue replay are moved to the dead-letter area instead of retrying until the maximum retry count.
@@ -219,13 +219,13 @@ Restart the container after editing the file.
 Backup:
 
 ```bash
-tar -czf contextauthlab-data-$(date +%Y%m%d).tar.gz data/paper logs
+tar -czf contextauth-data-$(date +%Y%m%d).tar.gz data/paper logs
 ```
 
 Restore:
 
 ```bash
-tar -xzf contextauthlab-data-YYYYMMDD.tar.gz
+tar -xzf contextauth-data-YYYYMMDD.tar.gz
 docker compose up -d
 ```
 
@@ -258,7 +258,7 @@ Prometheus scrape example:
 
 ```yaml
 scrape_configs:
-  - job_name: contextauthlab
+  - job_name: contextauth
     static_configs:
       - targets: ["127.0.0.1:8000"]
 ```

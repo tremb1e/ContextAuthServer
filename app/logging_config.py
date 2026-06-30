@@ -11,7 +11,7 @@ from typing import Any
 from .config import SETTINGS
 
 
-LOGGER = logging.getLogger("contextauthlab")
+LOGGER = logging.getLogger("contextauth")
 
 
 class JsonLineFormatter(logging.Formatter):

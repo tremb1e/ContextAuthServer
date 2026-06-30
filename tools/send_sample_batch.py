@@ -241,7 +241,7 @@ def main() -> None:
         raise SystemExit(f"unsupported task category: {task_category}")
 
     config = get_json(args.server.rstrip("/") + "/api/v1/config")
-    fake_android_id = f"contextauthlab-fake-android-id-{args.device_suffix}-{args.seed}"
+    fake_android_id = f"contextauth-fake-android-id-{args.device_suffix}-{args.seed}"
     device_id = args.device_id or compute_device_id(config["serverStudySalt"], fake_android_id)
     task_session_id = str(uuid.uuid4()) if task_category is not None else None
     session_id = task_session_id or str(uuid.uuid4())

@@ -1,12 +1,12 @@
-# ContextAuthLabServer
+# ContextAuthServer
 
 FastAPI ingest and disk-storage service for ContextAuthLab. This project is now independent from the Android Gradle project.
 
 The Android client lives in the sibling directory:
 
 ```text
-/data/paper/sp/app_exp/ContextAuthLabApp
-/data/paper/sp/app_exp/ContextAuthLabServer
+/data/paper/sp/app_exp/ContextAuthlab
+/data/paper/sp/app_exp/ContextAuthServer
 ```
 
 ## Layout
@@ -24,7 +24,7 @@ docker-compose.yml      canonical local compose file
 ## Local Python
 
 ```bash
-cd /data/paper/sp/app_exp/ContextAuthLabServer
+cd /data/paper/sp/app_exp/ContextAuthServer
 python3 -m pip install -r requirements-dev.txt
 PYTHONPATH=. pytest -q tests
 PYTHONPATH=. uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -33,7 +33,7 @@ PYTHONPATH=. uvicorn app.main:app --host 0.0.0.0 --port 8000
 ## Docker
 
 ```bash
-cd /data/paper/sp/app_exp/ContextAuthLabServer
+cd /data/paper/sp/app_exp/ContextAuthServer
 cp .env.example .env
 docker compose up -d --build
 curl http://127.0.0.1:8000/health
@@ -43,7 +43,7 @@ curl http://127.0.0.1:8000/ready
 Build the server image explicitly:
 
 ```bash
-docker build -t contextauthlab/server:latest .
+docker build -t contextauth/server:latest .
 ```
 
 ## Tests

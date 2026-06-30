@@ -1,1 +1,1 @@
-"""ContextAuthLab server package."""
+"""ContextAuth server package."""

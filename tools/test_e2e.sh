@@ -39,7 +39,7 @@ grep -q '"event":"ingest_stored"' logs/server.jsonl
 
 python tools/send_sample_batch.py --server http://127.0.0.1:8000 --count 12 --task-category THIRD_PARTY_APP --output tools/e2e_third_party_result.json
 curl -fsS http://127.0.0.1:8000/metrics | grep -q 'ingest_total{result="ok"}'
-docker compose logs --no-color contextauthlab-server | grep -E '"event":"(ingest_received|ingest_stored)"' >/dev/null
+docker compose logs --no-color contextauth-server | grep -E '"event":"(ingest_received|ingest_stored)"' >/dev/null
 
 docker compose down
 test -d data/paper/devices/"$DEVICE_ID"
