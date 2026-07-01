@@ -1,0 +1,53 @@
+# research/ default config (build contract §7). Experiment configs under
+# configs/experiments/*.yaml are thin overrides deep-merged over this file.
+seed: 42
+
+runtime:
+  smoke: false        # when true, shrinks nets/epochs/data for fast tests
+  device: cpu         # torch device; CPU-only is assumed throughout
+
+preprocess:
+  window_size_sec: 5  # window length (seconds)
+  stride_sec: 1       # window stride (seconds) -> 4s overlap at default
+  gap_min: 10         # session cut on inter-sample gap > this many minutes
+
+features:
+  mode: ui_sensor     # one of: sensor_only, ui_sensor, ui_sensor_no_package,
+                      # package_only, ui_only, privacy_coarse_ui
+
+labeling:
+  temperature: 1.0    # softmax temperature for weak-label scores
+  low_conf_prob: 0.35 # max prob below this -> low-confidence window
+  low_conf_margin: 0.10  # (top1 - top4) prob below this -> low-confidence
+
+dataset:
+  protocol: leave_session_out   # leave_session_out | leave_day_out |
+                                # leave_app_out | matched_impostor | combined
+  enroll_query_disjoint: true   # enroll/query sessions must be disjoint
+
+model:
+  kind: moe           # moe | dense
+  top_k: 2            # active experts (1..7); 7 == dense-all
+  n_experts: 7        # == N_SCENARIOS
+  embedding_dim: 128
+  expert_hidden: [128]
+  router: learned     # learned | fixed_rule | random | hash | package_only
+
+train:
+  epochs: 2
+  lr: 0.001
+  batch_size: 64
+  early_stop_patience: 3
+
+loss:
+  lambda_scene: 1.0     # weight of router KL-to-weak-label term
+  lambda_balance: 0.005 # load-balance weight (small)
+  lambda_smooth: 0.1    # temporal-smoothness weight
+  auth_kind: ce_proto   # ce_proto | triplet
+
+topk:
+  sweep: [1, 2, 3, 4, 5, 6, 7]
+  select_on: val        # k* chosen on validation, then frozen
+
+report:
+  outdir: data/results

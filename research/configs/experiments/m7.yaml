@@ -1,0 +1,15 @@
+# M7 weak_moe (spec §9.4 / runner.M_OVERRIDES["m7"]) -- THE FORMAL METHOD.
+# 7-expert MoE (C0..C6), learned router KL-supervised by the weak-label probs,
+# top-k* sparse gating; loss = L_auth + lambda_scene * KL_weak +
+# lambda_balance * load_balance + lambda_smooth * temporal_smoothness
+# (all weights from configs/default.yaml). Authentication is prototype/cosine
+# verification with enroll/query sessions disjoint.
+#
+# ``top_k: "__kstar__"`` is resolved to the frozen validation-selected k* by the
+# runner (run_all_experiments freezes k* on the top-k sweep first).
+model:
+  kind: moe
+  router: learned
+  top_k: "__kstar__"
+features:
+  mode: ui_sensor

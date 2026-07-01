@@ -1,0 +1,15 @@
+# M6 auth_only_moe (spec §9.4 / runner.M_OVERRIDES["m6"]).
+# Same architecture and k* as the formal M7 MoE, but with NO weak-label KL
+# supervision on the router (loss.lambda_scene = 0): the router is learned from
+# the auth loss + load-balance + temporal-smoothness only. RQ4 "does weak
+# supervision help vs an auth-only MoE?".
+#
+# ``top_k: "__kstar__"`` is resolved to the frozen k* by the runner.
+model:
+  kind: moe
+  router: learned
+  top_k: "__kstar__"
+features:
+  mode: ui_sensor
+loss:
+  lambda_scene: 0.0

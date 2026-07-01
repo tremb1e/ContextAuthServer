@@ -1,0 +1,35 @@
+# Ablation: feature-family / loss-term removal (spec §9.5).
+# Each value removes one family or loss term from the formal method to measure its
+# marginal contribution. Feature-family removals map to a feature mode or to
+# dropping a column group; loss-term removals zero the corresponding lambda.
+#
+#   no_ui                  -> drop UI family        (feature mode sensor_only)
+#   no_sensor              -> drop IMU family        (feature mode ui_only)
+#   no_package             -> drop package family    (feature mode ui_sensor_no_package)
+#   no_tree_diff           -> drop the ui_treediff_* columns (structural tree diff)
+#   no_temporal_smoothness -> loss.lambda_smooth = 0
+#   no_load_balance        -> loss.lambda_balance = 0
+#
+# The base method is the formal learned weak-supervised MoE at k*.
+model:
+  kind: moe
+  router: learned
+  top_k: "__kstar__"
+features:
+  mode: ui_sensor
+
+ablation:
+  dimension: feature_family
+  values:
+    - name: no_ui
+      features_mode: sensor_only
+    - name: no_sensor
+      features_mode: ui_only
+    - name: no_package
+      features_mode: ui_sensor_no_package
+    - name: no_tree_diff
+      drop_columns: [ui_treediff_nodedelta, ui_treediff_categoryl1, ui_treediff_boundsl1, ui_treediff_hashchanged]
+    - name: no_temporal_smoothness
+      loss: {lambda_smooth: 0.0}
+    - name: no_load_balance
+      loss: {lambda_balance: 0.0}

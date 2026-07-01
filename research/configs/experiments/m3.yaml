@@ -1,0 +1,11 @@
+# M3 package_only_router (spec §9.4 / runner.M_OVERRIDES["m3"]).
+# MoE whose router sees ONLY the package feature slice (pkg_bucket_hash); tests
+# the package-name confound (RQ6). If the feature mode had no package columns the
+# trainer gracefully falls back to a learned router on the full vector (documented
+# in trainer.build_model), so ui_sensor (which includes pkg_bucket_hash) is used.
+model:
+  kind: moe
+  router: package_only
+  top_k: 2
+features:
+  mode: ui_sensor

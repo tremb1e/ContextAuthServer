@@ -1,0 +1,22 @@
+# Ablation: top-k sweep (spec §9.5 / §10, RQ5).
+# The full k in {1..7} sweep over the formal method (learned weak-supervised MoE);
+# k=7 == dense-all (aggregate every expert). This mirrors the base config's
+# `topk.sweep`; the runner (research.experiments.runner.run_topk_sweep) reads
+# `topk.sweep`, evaluates each k on VALIDATION, writes topk_sweep.csv, and freezes
+# k* via select_kstar_pareto (smallest-cost k not significantly worse than best).
+#
+# `sweep` below is the authoritative swept dimension for this ablation.
+model:
+  kind: moe
+  router: learned
+  top_k: 2          # placeholder; overridden per-k by the sweep
+features:
+  mode: ui_sensor
+topk:
+  sweep: [1, 2, 3, 4, 5, 6, 7]
+  select_on: val    # k* chosen on validation, then frozen (tested once at k*)
+
+# Swept dimension (documentation for make_report / ablation drivers):
+ablation:
+  dimension: top_k
+  values: [1, 2, 3, 4, 5, 6, 7]

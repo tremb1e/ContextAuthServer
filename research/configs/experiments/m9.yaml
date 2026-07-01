@@ -1,0 +1,10 @@
+# M9 random_moe (spec §9.4 / runner.M_OVERRIDES["m9"]).
+# MoE with a fixed-seed RANDOM router (constant per-expert logits); top-k* gating
+# over meaningless routing. Control showing the gain is from LEARNED routing, not
+# from the mixture capacity alone. ``top_k: "__kstar__"`` -> frozen k*.
+model:
+  kind: moe
+  router: random
+  top_k: "__kstar__"
+features:
+  mode: ui_sensor

@@ -1,0 +1,9 @@
+# M4 fixed_rule_top1 (spec §9.4 / runner.M_OVERRIDES["m4"]).
+# MoE with a fixed (untrained) router = log(weak_label_probs); top_k=1 selects the
+# single top-1 weak-label expert. RQ3 fixed-rule vs learned-routing lower anchor.
+model:
+  kind: moe
+  router: fixed_rule
+  top_k: 1
+features:
+  mode: ui_sensor

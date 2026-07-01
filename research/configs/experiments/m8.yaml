@@ -1,0 +1,10 @@
+# M8 weak_moe_no_package (spec §9.4 / runner.M_OVERRIDES["m8"]).
+# Identical to M7 but with the package features removed (feature mode
+# ui_sensor_no_package drops every pkg_* column). If M8 ~= M7 the model does not
+# depend on the foreground app/package (RQ6). ``top_k: "__kstar__"`` -> frozen k*.
+model:
+  kind: moe
+  router: learned
+  top_k: "__kstar__"
+features:
+  mode: ui_sensor_no_package

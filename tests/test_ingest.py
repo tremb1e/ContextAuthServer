@@ -33,7 +33,7 @@ def test_ingest_valid_envelope_stores_batch_and_meta(server_client) -> None:
     stored = json.loads(batch_path.read_text(encoding="utf-8"))
     assert stored["task_category"] == "C3"
     assert stored["task_id"] == "C3"
-    assert stored["task_intuitive_description"] == "Text entry"
+    assert stored["task_intuitive_description"] == "Discrete navigation"
     assert stored["touch_events"][0]["event_type"] == "TOUCH_INTERACTION_START"
     assert "x" not in stored["touch_events"][0]
     assert stored["context_events"][0]["coarse_orientation"] == "portrait"
@@ -53,11 +53,11 @@ def test_by_category_index_created(server_client) -> None:
         assert not Path(link.readlink()).is_absolute()
 
 
-def test_c7_category_index_created(server_client) -> None:
-    batch = sample_batch(task_category="C7")
+def test_c6_category_index_created(server_client) -> None:
+    batch = sample_batch(task_category="C6")
     response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
     assert response.status_code == 200
-    link = _data_dir(server_client) / "devices" / DEVICE_ID / "by_category" / "C7" / "2024-03-09" / f"{batch['batch_id']}.json"
+    link = _data_dir(server_client) / "devices" / DEVICE_ID / "by_category" / "C6" / "2024-03-09" / f"{batch['batch_id']}.json"
     assert link.exists()
 
 

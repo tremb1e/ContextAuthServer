@@ -22,6 +22,10 @@ env/
 
 # Runtime data, logs, and local backups
 data/paper/
+data/synthetic/
+data/processed/
+data/datasets/
+data/results/
 logs/
 backups/
 *.log

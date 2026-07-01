@@ -1,0 +1,15 @@
+# M5 fixed_rule_topk_star (spec §9.4 / runner.M_OVERRIDES["m5"]).
+# Fixed (untrained) router = log(weak_label_probs) with top_k = k* (the frozen
+# validation-selected optimum shared with the formal method). A STRONG baseline:
+# it uses the same k* as M7 and is deliberately NOT crippled (RQ3).
+#
+# ``top_k: "__kstar__"`` is the sentinel the runner (runner._resolve_experiment_cfg)
+# substitutes with the frozen k* read from topk_kstar.json at suite build time.
+# When this config is loaded standalone (outside run_all_experiments) resolve it
+# to a concrete k first, or use run_all_experiments which injects k*.
+model:
+  kind: moe
+  router: fixed_rule
+  top_k: "__kstar__"
+features:
+  mode: ui_sensor

@@ -1,0 +1,10 @@
+# M10 hash_moe (spec §9.4 / runner.M_OVERRIDES["m10"]).
+# MoE whose router hashes the per-window id to a single expert (id % n_experts),
+# so top-1 gating always fires one hashed expert regardless of top_k. Another
+# non-semantic routing control (RQ3/RQ4). ``top_k: "__kstar__"`` -> frozen k*.
+model:
+  kind: moe
+  router: hash
+  top_k: "__kstar__"
+features:
+  mode: ui_sensor

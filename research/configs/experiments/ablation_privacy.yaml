@@ -1,0 +1,31 @@
+# Ablation: privacy / redaction level (spec §9.5, RQ7).
+# Sweeps how aggressively structural signal is coarsened, trading privacy for
+# discriminability. All levels remain leakage-free (the 4 LEAKAGE_COLUMNS are
+# never features regardless of level); this ablation only coarsens ALLOWED UI
+# structure, per the exp_prompt §14 privacy budget.
+#
+#   privacy_coarse_bounds        -> keep UI+IMU but only coarse bounds occupancy
+#                                   (feature mode privacy_coarse_ui, no package).
+#   no_resource_id               -> resource ids never used anyway (viewIdResourceName
+#                                   is a LEAKAGE column, always excluded); this level
+#                                   makes that explicit and keeps ui_sensor_no_package.
+#   coarse_widget_category_only  -> only coarse widget-category UI signal + IMU
+#                                   (privacy_coarse_ui), the strictest privacy level.
+#
+# The base method for every level is the formal learned weak-supervised MoE.
+model:
+  kind: moe
+  router: learned
+  top_k: "__kstar__"
+features:
+  mode: privacy_coarse_ui
+
+ablation:
+  dimension: privacy_level
+  values:
+    - name: privacy_coarse_bounds
+      features_mode: privacy_coarse_ui
+    - name: no_resource_id
+      features_mode: ui_sensor_no_package
+    - name: coarse_widget_category_only
+      features_mode: privacy_coarse_ui

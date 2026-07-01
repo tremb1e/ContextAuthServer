@@ -24,14 +24,13 @@ def sample_batch(
 ) -> dict[str, Any]:
     batch_uuid = batch_id or str(uuid.uuid4())
     task_meta = {
-        "C0": ("Still timer", "Quiet hold"),
-        "C1": ("Research protocol reading", "Static reading"),
-        "C2": ("Research information feed", "Single-finger feed"),
-        "C3": ("Paragraph copy", "Text entry"),
+        "C0": ("Hold and read", "Quiescent viewing"),
+        "C1": ("Paragraph copy", "Keyboard text entry"),
+        "C2": ("Feed browsing", "Continuous scrolling"),
+        "C3": ("Menu navigation", "Discrete navigation"),
         "C4": ("Simulated phone settings", "Multi-control operation"),
-        "C5": ("Blue ball tapping", "Landscape touch challenge"),
-        "C6": ("Local video playback", "Video watching"),
-        "C7": ("Wrist rotation", "Explicit wrist rotation"),
+        "C5": ("Local video playback", "Media playback"),
+        "C6": ("Wrist rotation", "Canvas high motion"),
     }
     task_name, intuition = task_meta.get(task_category or "", (None, None))
     batch_session_id = str(uuid.uuid4())

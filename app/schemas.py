@@ -16,7 +16,6 @@ TASK_CATEGORIES = {
     "C4",
     "C5",
     "C6",
-    "C7",
 }
 
 

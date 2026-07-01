@@ -1,0 +1,11 @@
+# M2 capacity_matched_dense (spec §9.4 / runner.M_OVERRIDES["m2"]).
+# A wider dense encoder whose parameter count approximately matches the M7
+# top-k* MoE (controls the capacity confound in RQ2). The actual param count is
+# recorded in each run's metrics.json; the match is approximate (see README
+# "Minimal-working-version limitations": capacity-match is by hidden-width, not
+# an exact FLOP solve).
+model:
+  kind: dense
+  hidden_dims: [256, 128, 128]
+features:
+  mode: ui_sensor

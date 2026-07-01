@@ -1,0 +1,7 @@
+# M1 ui_sensor_dense (spec §9.4 / runner.M_OVERRIDES["m1"]).
+# UI + IMU features, plain dense encoder. RQ1 "does UI structure help?" mid point.
+model:
+  kind: dense
+  hidden_dims: [128, 64]
+features:
+  mode: ui_sensor

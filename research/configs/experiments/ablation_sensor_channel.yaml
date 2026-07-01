@@ -1,0 +1,29 @@
+# Ablation: single-sensor-channel removal (spec §9.5, plot sensor_channel_ablation).
+# Drops one IMU channel at a time to validate each channel's contribution -- in
+# particular that the MAGNETOMETER adds signal (a claim the exp_prompt flags).
+# Each value removes all columns of one channel (acc_* / gyro_* / mag_*) from the
+# feature vector; the remaining two channels keep full 3-axis parity.
+#
+#   no_accel         -> drop acc_* columns
+#   no_gyro          -> drop gyro_* columns
+#   no_magnetometer  -> drop mag_* columns
+#
+# The base method is the formal learned weak-supervised MoE at k*. If a driver
+# writes data/results/sensor_channel_ablation.csv (columns channel,eer) the plot
+# renders it; otherwise the figure skips with a message.
+model:
+  kind: moe
+  router: learned
+  top_k: "__kstar__"
+features:
+  mode: ui_sensor
+
+ablation:
+  dimension: sensor_channel
+  values:
+    - name: no_accel
+      drop_channel_prefix: acc_
+    - name: no_gyro
+      drop_channel_prefix: gyro_
+    - name: no_magnetometer
+      drop_channel_prefix: mag_

@@ -1,0 +1,17 @@
+# Ablation: 8->7 scenario mapping (spec §9.5 / §三, plot mapping_ablation).
+# Compares the recommended C0..C6 taxonomy against an alternate mapping where the
+# C5 MEDIA_PLAYBACK expert is merged toward navigation (alt_c5_nav). The 7-expert
+# taxonomy is FROZEN in this build (research.SCENARIOS), so alt_c5_nav is an
+# OPTIONAL S5 artifact: if a driver produces data/results/mapping_ablation.csv
+# (columns mapping,eer) the plot renders it, otherwise the figure skips with a
+# message (see reporting.plots.mapping_ablation).
+model:
+  kind: moe
+  router: learned
+  top_k: "__kstar__"
+features:
+  mode: ui_sensor
+
+ablation:
+  dimension: mapping
+  values: [recommended, alt_c5_nav]
