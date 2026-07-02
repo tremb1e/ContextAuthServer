@@ -9,13 +9,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 DEVICE_ID_RE = re.compile(r"^[a-f0-9]{64}$")
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 TASK_CATEGORIES = {
-    "C0",
-    "C1",
-    "C2",
-    "C3",
-    "C4",
-    "C5",
-    "C6",
+    "I0",
+    "I1",
+    "I2",
+    "I3",
+    "I4",
+    "I5",
+    "I6",
+    "I7",
 }
 
 
@@ -191,6 +192,8 @@ class TouchEvent(BaseModel):
 
 
 class ContextEvent(BaseModel):
+    # extra="allow" accepts the app's new per-event `event_detail` object
+    # (full AccessibilityEvent metadata, no text content) with no schema change.
     model_config = ConfigDict(extra="allow")
 
     event_id: str

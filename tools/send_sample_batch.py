@@ -16,25 +16,25 @@ import lz4.frame
 
 
 TASK_CATEGORIES = [
-    "C0",
-    "C1",
-    "C2",
-    "C3",
-    "C4",
-    "C5",
-    "C6",
-    "C7",
+    "I0",
+    "I1",
+    "I2",
+    "I3",
+    "I4",
+    "I5",
+    "I6",
+    "I7",
 ]
 
 TASK_META = {
-    "C0": ("Still timer", "Quiet hold"),
-    "C1": ("Research protocol reading", "Static reading"),
-    "C2": ("Research information feed", "Single-finger feed"),
-    "C3": ("Paragraph copy", "Text entry"),
-    "C4": ("Simulated phone settings", "Multi-control operation"),
-    "C5": ("Blue ball tapping", "Landscape touch challenge"),
-    "C6": ("Local video playback", "Video watching"),
-    "C7": ("Wrist rotation", "Explicit wrist rotation"),
+    "I0": ("Quiet viewing and video", "Static viewing"),
+    "I1": ("Text entry and editing", "Text entry"),
+    "I2": ("Discrete taps and controls", "Discrete touch"),
+    "I3": ("List scrolling and selection", "List browsing"),
+    "I4": ("Long-document review", "Long-form review"),
+    "I5": ("Annotate, draw, and drag", "Object manipulation"),
+    "I6": ("Scan, frame, and capture", "Spatial capture"),
+    "I7": ("Wrist rotation and motion canvas", "Wrist rotation"),
 }
 
 

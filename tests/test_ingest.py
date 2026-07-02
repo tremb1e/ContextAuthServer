@@ -31,9 +31,9 @@ def test_ingest_valid_envelope_stores_batch_and_meta(server_client) -> None:
     assert batch_path.exists()
     assert meta_path.exists()
     stored = json.loads(batch_path.read_text(encoding="utf-8"))
-    assert stored["task_category"] == "C3"
-    assert stored["task_id"] == "C3"
-    assert stored["task_intuitive_description"] == "Discrete navigation"
+    assert stored["task_category"] == "I3"
+    assert stored["task_id"] == "I3"
+    assert stored["task_intuitive_description"] == "List browsing"
     assert stored["touch_events"][0]["event_type"] == "TOUCH_INTERACTION_START"
     assert "x" not in stored["touch_events"][0]
     assert stored["context_events"][0]["coarse_orientation"] == "portrait"
@@ -43,21 +43,21 @@ def test_ingest_valid_envelope_stores_batch_and_meta(server_client) -> None:
 
 
 def test_by_category_index_created(server_client) -> None:
-    batch = sample_batch(task_category="C4")
+    batch = sample_batch(task_category="I4")
     response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
     assert response.status_code == 200
-    link = _data_dir(server_client) / "devices" / DEVICE_ID / "by_category" / "C4" / "2024-03-09" / f"{batch['batch_id']}.json"
+    link = _data_dir(server_client) / "devices" / DEVICE_ID / "by_category" / "I4" / "2024-03-09" / f"{batch['batch_id']}.json"
     assert link.exists()
     if link.is_symlink():
         assert link.resolve().exists()
         assert not Path(link.readlink()).is_absolute()
 
 
-def test_c6_category_index_created(server_client) -> None:
-    batch = sample_batch(task_category="C6")
+def test_i7_category_index_created(server_client) -> None:
+    batch = sample_batch(task_category="I7")
     response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
     assert response.status_code == 200
-    link = _data_dir(server_client) / "devices" / DEVICE_ID / "by_category" / "C6" / "2024-03-09" / f"{batch['batch_id']}.json"
+    link = _data_dir(server_client) / "devices" / DEVICE_ID / "by_category" / "I7" / "2024-03-09" / f"{batch['batch_id']}.json"
     assert link.exists()
 
 
@@ -217,8 +217,8 @@ def test_task_category_required_when_builtin(server_client) -> None:
 
 def test_task_category_must_be_null_when_third_party(server_client) -> None:
     batch = sample_batch(collection_source="THIRD_PARTY_APP", task_category=None)
-    batch["task_category"] = "C3"
-    batch["context_features"][0]["task_category"] = "C3"
+    batch["task_category"] = "I3"
+    batch["context_features"][0]["task_category"] = "I3"
     response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
     assert response.status_code == 400
     assert response.json()["detail"] == "schema_validation_failed"
