@@ -1,0 +1,84 @@
+# ContextAuthServer 摄取服务 —— 自包含部署
+# 数据与配置均置于本 deploy/ 目录下：
+#   deploy/data/paper  -> 容器 /data/paper（devices/index/quarantine/rules.json/server_study_salt.txt）
+#   deploy/logs        -> 容器 /app/logs
+# 构建时容器内部代理: http://192.168.128.2:9999（宿主机网络环境下的代理）
+#
+# 用法（在仓库根 /data/paper/sp/app_exp/ContextAuthServer 下执行）：
+#   docker compose -f deploy/docker-compose.yml build      # 带构建代理构建镜像
+#   docker compose -f deploy/docker-compose.yml up -d       # 启动
+#   docker compose -f deploy/docker-compose.yml ps          # 查看状态/健康
+#   docker compose -f deploy/docker-compose.yml logs -f     # 日志
+#   docker compose -f deploy/docker-compose.yml down        # 停止并移除
+name: contextauth-deploy
+
+x-build: &build
+  context: ..
+  dockerfile: Dockerfile
+  network: host                    # 构建容器使用宿主网络，便于访问 192.168.128.2:9999
+  args:
+    HTTP_PROXY: "http://192.168.128.2:9999"
+    HTTPS_PROXY: "http://192.168.128.2:9999"
+    http_proxy: "http://192.168.128.2:9999"
+    https_proxy: "http://192.168.128.2:9999"
+    NO_PROXY: "localhost,127.0.0.1,::1,192.168.128.2"
+    no_proxy: "localhost,127.0.0.1,::1,192.168.128.2"
+
+x-volumes: &volumes
+  - ./data/paper:/data/paper:rw    # 数据（相对 deploy/ 目录）
+  - ./logs:/app/logs:rw            # 日志
+
+services:
+  # 以 root 预创建目录并把属主设为宿主用户(1001)，随后主服务以非 root 运行
+  contextauth-server-init:
+    build: *build
+    image: contextauth/server:deploy
+    container_name: cca-deploy-init
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "mkdir -p /data/paper/devices /data/paper/index /data/paper/quarantine /app/logs && chown -R 1001:1001 /data/paper /app/logs && chmod -R u+rwX,g+rwX /data/paper /app/logs"
+    volumes: *volumes
+    restart: "no"
+
+  contextauth-server:
+    build: *build
+    image: contextauth/server:deploy
+    container_name: cca-deploy
+    restart: unless-stopped
+    depends_on:
+      contextauth-server-init:
+        condition: service_completed_successfully
+    ports:
+      - "0.0.0.0:8000:8000"        # 对外监听（所有网卡）。注意：无鉴权、应用层不加密，
+                                    # 对外暴露务必前置 HTTPS/TLS 反代并配置防火墙/白名单
+    environment:
+      SERVER_DATA_DIR: /data/paper
+      SERVER_LOG_DIR: /app/logs
+      SERVER_RULES_FILE: /data/paper/rules.json
+      SERVER_STUDY_SALT: Continuous_Authentication   # 与 App 内置固定盐一致
+      RULES_VERSION: "1"
+      INGEST_REQUIRE_AUTH: "false"                    # 该原型不支持鉴权，置 true 会拒绝启动
+      SERVER_MIN_FREE_BYTES: "10485760"
+      SERVER_FIX_PERMISSIONS: "true"
+      SERVER_CHOWN_RECURSIVE: "true"
+      APP_UID: "1001"                                 # 容器内非 root 进程与挂载数据的属主=宿主用户
+      APP_GID: "1001"
+      TIME_SYNC_REGION: "CN"
+      TZ: "Asia/Shanghai"
+    volumes: *volumes
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp

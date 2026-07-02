@@ -1,0 +1,3 @@
+# 运行时数据与日志不入库（仅提交 docker-compose.yml / README.md / 本文件）
+data/
+logs/
