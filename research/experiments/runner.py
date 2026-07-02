@@ -20,17 +20,21 @@ from __future__ import annotations
 
 import csv
 import json
+import os
+import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import torch
 import yaml
 
-from research import SCENARIOS
+from research import SCENARIOS, TASK_SCENE_MAPPINGS, canonical_scene_for_task
 from research.config import config_hash, load_config
+from research.datasets.impostors import sample_matched_impostors
 from research.experiments._data import DatasetBundle
 from research.experiments.bootstrap import bootstrap_ci, paired_delta
 from research.experiments.evaluator import EvalResult, evaluate
@@ -43,7 +47,8 @@ from research.experiments.metrics import (
 )
 from research.experiments.trainer import build_model, train_model
 from research.models.moe import MoEAuthenticator
-from research.utils.logging import JsonlLogger, get_logger, run_context
+from research.preprocessing.feature_extractors import build_feature_columns
+from research.utils.logging import get_logger, run_context
 from research.utils.seed import set_seed
 
 LOGGER = get_logger("research.runner")
@@ -471,6 +476,183 @@ def _deep_override(base: dict[str, Any], override: dict[str, Any]) -> dict[str, 
     return merged
 
 
+def _link_or_copy(src: Path, dst: Path) -> None:
+    """Hard-link a dataset artifact if possible, falling back to copy.
+
+    Args:
+        src: Source file.
+        dst: Destination file.
+    """
+    if dst.exists() or dst.is_symlink():
+        dst.unlink()
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
+def _write_feature_manifest(
+    dataset_dir: Path,
+    feature_columns: list[str],
+    *,
+    feature_mode: str,
+    source_manifest: dict[str, Any] | None = None,
+) -> None:
+    """Write a feature manifest for a dataset view.
+
+    Args:
+        dataset_dir: View directory.
+        feature_columns: Active ordered feature columns.
+        feature_mode: Label for the feature mode / ablation view.
+        source_manifest: Optional source manifest to preserve ancillary fields.
+    """
+    manifest = dict(source_manifest or {})
+    manifest.update(
+        {
+            "feature_mode": feature_mode,
+            "feature_columns": feature_columns,
+            "package_columns": [c for c in feature_columns if c.startswith("pkg_")],
+            "input_dim": len(feature_columns),
+            "leakage_free": True,
+        }
+    )
+    (dataset_dir / "feature_manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True, default=str), encoding="utf-8"
+    )
+
+
+def _dataset_view(
+    source_dir: str | Path,
+    view_root: str | Path,
+    name: str,
+    *,
+    feature_mode: str | None = None,
+    drop_columns: list[str] | None = None,
+    drop_prefixes: list[str] | None = None,
+    relabel_mapping: str | None = None,
+    seed: int = 42,
+) -> Path:
+    """Create a lightweight dataset view for feature/mapping ablations.
+
+    Feature-family and sensor-channel ablations only need a different
+    ``feature_manifest.json``; the split parquet files are hard-linked. Mapping
+    ablations rewrite weak labels from ``raw_task_category`` / ``task_category``
+    and rebuild scene-matched impostor pairs.
+
+    Args:
+        source_dir: Existing dataset directory.
+        view_root: Root directory for generated views.
+        name: View directory name.
+        feature_mode: Optional feature mode whose columns become active.
+        drop_columns: Exact feature columns to drop.
+        drop_prefixes: Feature-column prefixes to drop.
+        relabel_mapping: Optional task-scene mapping variant.
+        seed: Deterministic impostor resampling seed.
+
+    Returns:
+        The view dataset directory.
+    """
+    source = Path(source_dir)
+    view = Path(view_root) / name
+    if view.exists():
+        shutil.rmtree(view)
+    view.mkdir(parents=True, exist_ok=True)
+
+    src_manifest = json.loads((source / "feature_manifest.json").read_text(encoding="utf-8"))
+    if feature_mode is None:
+        columns = list(src_manifest["feature_columns"])
+        mode_label = str(src_manifest.get("feature_mode", "ui_sensor"))
+    else:
+        columns = build_feature_columns(feature_mode)
+        mode_label = feature_mode
+    drop_set = set(drop_columns or [])
+    prefixes = tuple(drop_prefixes or [])
+    if drop_set or prefixes:
+        columns = [c for c in columns if c not in drop_set and not c.startswith(prefixes)]
+        if drop_set:
+            mode_label = f"{mode_label}__drop_" + "_".join(sorted(drop_set))
+        if prefixes:
+            mode_label = f"{mode_label}__drop_" + "_".join(p.rstrip("_") for p in prefixes)
+    if not columns:
+        raise ValueError(f"dataset view {name!r} would have zero active feature columns")
+
+    _write_feature_manifest(view, columns, feature_mode=mode_label, source_manifest=src_manifest)
+
+    src_split_manifest = source / "split_manifest.json"
+    split_manifest = json.loads(src_split_manifest.read_text(encoding="utf-8")) if src_split_manifest.exists() else {}
+    split_manifest.update(
+        {
+            "dataset_view_of": str(source),
+            "dataset_name": name,
+            "feature_mode": mode_label,
+            "input_dim": len(columns),
+        }
+    )
+
+    if relabel_mapping is None:
+        for filename in ("train.parquet", "val.parquet", "test.parquet", "impostor_pairs.parquet"):
+            src = source / filename
+            if src.exists():
+                _link_or_copy(src, view / filename)
+    else:
+        if relabel_mapping not in TASK_SCENE_MAPPINGS:
+            raise ValueError(f"unknown relabel mapping: {relabel_mapping!r}")
+        frames: dict[str, pd.DataFrame] = {}
+        for split in ("train", "val", "test"):
+            src = source / f"{split}.parquet"
+            frame = pd.read_parquet(src) if src.exists() else pd.DataFrame()
+            if not frame.empty:
+                frame = _relabel_frame(frame, relabel_mapping)
+            frames[split] = frame
+            frame.to_parquet(view / f"{split}.parquet", index=False)
+        full = pd.concat([f for f in frames.values() if not f.empty], ignore_index=True) if any(not f.empty for f in frames.values()) else pd.DataFrame()
+        if full.empty:
+            pd.DataFrame().to_parquet(view / "impostor_pairs.parquet", index=False)
+        else:
+            test_start = len(frames["train"]) + len(frames["val"])
+            test_idx = list(range(test_start, test_start + len(frames["test"])))
+            pairs = sample_matched_impostors(full, test_idx, list(full.index), seed=seed, n_per_genuine=1)
+            pairs.to_frame().to_parquet(view / "impostor_pairs.parquet", index=False)
+            split_manifest["n_impostor_pairs"] = len(pairs)
+        split_manifest["task_mapping"] = relabel_mapping
+
+    split_manifest.setdefault("task_mapping", split_manifest.get("task_mapping", "recommended"))
+    (view / "split_manifest.json").write_text(
+        json.dumps(split_manifest, indent=2, sort_keys=True, default=str), encoding="utf-8"
+    )
+    return view
+
+
+def _relabel_frame(frame: pd.DataFrame, mapping: str) -> pd.DataFrame:
+    """Rewrite weak-label columns from task labels for mapping ablations.
+
+    Args:
+        frame: Split frame.
+        mapping: Task-scene mapping name.
+
+    Returns:
+        A relabelled copy.
+    """
+    out = frame.copy()
+    raw_col = "raw_task_category" if "raw_task_category" in out.columns else "task_category"
+    scenarios = list(SCENARIOS)
+    for idx, raw in out[raw_col].items():
+        scene = canonical_scene_for_task(None if pd.isna(raw) else str(raw), mapping)
+        if scene is None:
+            continue
+        probs = [0.01 / (len(scenarios) - 1)] * len(scenarios)
+        probs[scenarios.index(scene)] = 0.99
+        topk = [scene] + [s for s in scenarios if s != scene]
+        out.at[idx, "task_category"] = scene
+        out.at[idx, "weak_label_top1"] = scene
+        out.at[idx, "weak_label_topk_json"] = json.dumps(topk, ensure_ascii=False)
+        out.at[idx, "weak_label_probs_json"] = json.dumps(probs, ensure_ascii=False)
+        out.at[idx, "weak_label_confidence"] = 0.99 - (0.01 / (len(scenarios) - 1))
+        out.at[idx, "weak_label_entropy"] = float(-sum(p * np.log(p) for p in probs if p > 0))
+        out.at[idx, "weak_label_low_confidence"] = False
+    return out
+
+
 def run_topk_sweep(cfg: dict[str, Any], data_dir: str | Path, out_dir: str | Path) -> Path:
     """Sweep k ∈ config ``topk.sweep`` (default 1..7) and write ``topk_sweep.csv``.
 
@@ -601,6 +783,135 @@ def _resolve_experiment_cfg(base_cfg: dict[str, Any], name: str, kstar: int, con
     return cfg
 
 
+def _formal_m7_cfg(base_cfg: dict[str, Any], kstar: int, override: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return the formal M7 config with ``k*`` resolved plus optional overrides."""
+    cfg = _deep_override(base_cfg, M_OVERRIDES["m7"])
+    cfg.setdefault("model", {})["top_k"] = int(kstar)
+    if override:
+        cfg = _deep_override(cfg, override)
+        if cfg.get("model", {}).get("top_k") == "__kstar__":
+            cfg["model"]["top_k"] = int(kstar)
+    return cfg
+
+
+def _ablation_metric_row(kind: str, name: str, run_dir: Path, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Build one CSV/index row from an ablation run directory."""
+    metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+    row: dict[str, Any] = {
+        "ablation_kind": kind,
+        "name": name,
+        "eer": metrics.get("eer"),
+        "roc_auc": metrics.get("roc_auc"),
+        "matched_impostor_eer": metrics.get("matched_impostor_eer"),
+        "top_k": metrics.get("top_k"),
+        "feature_mode": metrics.get("feature_mode"),
+        "router": metrics.get("router"),
+        "run_dir": str(run_dir),
+    }
+    if extra:
+        row.update(extra)
+    return row
+
+
+def _run_ablation_suites(cfg: dict[str, Any], data_dir: str | Path, out_dir: str | Path, kstar: int) -> dict[str, Any]:
+    """Run prompt-required ablation suites and write their CSV summaries.
+
+    Args:
+        cfg: Base config.
+        data_dir: Source dataset directory (preferably full ``ui_sensor``).
+        out_dir: Results root.
+        kstar: Frozen validation-selected top-k.
+
+    Returns:
+        Manifest fragment indexing the written ablation CSVs and runs.
+    """
+    out = Path(out_dir)
+    data = Path(data_dir)
+    view_root = out / "_dataset_views"
+    seed = int(cfg.get("seed", 42))
+    manifest: dict[str, Any] = {}
+
+    feature_specs = [
+        ("no_ui", {"features": {"mode": "sensor_only"}}, {"feature_mode": "sensor_only"}),
+        ("no_sensor", {"features": {"mode": "ui_only"}}, {"feature_mode": "ui_only"}),
+        ("no_package", {"features": {"mode": "ui_sensor_no_package"}}, {"feature_mode": "ui_sensor_no_package"}),
+        ("no_tree_diff", {"features": {"mode": "ui_sensor"}}, {"drop_columns": ["ui_treediff_nodedelta", "ui_treediff_categoryl1", "ui_treediff_boundsl1", "ui_treediff_hashchanged"]}),
+        ("no_temporal_smoothness", {"loss": {"lambda_smooth": 0.0}}, {}),
+        ("no_load_balance", {"loss": {"lambda_balance": 0.0}}, {}),
+    ]
+    feature_rows: list[dict[str, Any]] = []
+    for name, override, view_kwargs in feature_specs:
+        try:
+            if view_kwargs:
+                view = _dataset_view(data, view_root, f"feature__{name}", seed=seed, **view_kwargs)
+            else:
+                view = data
+            run_dir = run_experiment(_formal_m7_cfg(cfg, kstar, override), view, out, tag=f"ablation_feature_{name}")
+            feature_rows.append(_ablation_metric_row("feature", name, run_dir))
+        except Exception as exc:  # pragma: no cover - keeps long suites auditable
+            feature_rows.append({"ablation_kind": "feature", "name": name, "error": str(exc)})
+            LOGGER.warning("feature ablation %s failed: %s", name, exc)
+    _write_csv(out / "feature_ablation.csv", feature_rows)
+    manifest["feature"] = {"csv": str(out / "feature_ablation.csv"), "runs": feature_rows}
+
+    privacy_specs = [
+        ("privacy_coarse_bounds", "privacy_coarse_ui"),
+        ("no_resource_id", "ui_sensor_no_package"),
+        ("coarse_widget_category_only", "privacy_coarse_ui"),
+    ]
+    privacy_rows: list[dict[str, Any]] = []
+    for name, mode in privacy_specs:
+        try:
+            view = _dataset_view(data, view_root, f"privacy__{name}", feature_mode=mode, seed=seed)
+            run_dir = run_experiment(
+                _formal_m7_cfg(cfg, kstar, {"features": {"mode": mode}}),
+                view,
+                out,
+                tag=f"ablation_privacy_{name}",
+            )
+            privacy_rows.append(_ablation_metric_row("privacy", name, run_dir, {"privacy_level": name}))
+        except Exception as exc:  # pragma: no cover
+            privacy_rows.append({"ablation_kind": "privacy", "name": name, "privacy_level": name, "error": str(exc)})
+            LOGGER.warning("privacy ablation %s failed: %s", name, exc)
+    _write_csv(out / "privacy_ablation.csv", privacy_rows)
+    manifest["privacy"] = {"csv": str(out / "privacy_ablation.csv"), "runs": privacy_rows}
+
+    mapping_rows: list[dict[str, Any]] = []
+    for mapping in ("recommended", "alt_c5_nav"):
+        try:
+            view = _dataset_view(data, view_root, f"mapping__{mapping}", relabel_mapping=mapping, seed=seed)
+            run_dir = run_experiment(
+                _formal_m7_cfg(cfg, kstar, {"features": {"mode": str(cfg.get("features", {}).get("mode", "ui_sensor"))}}),
+                view,
+                out,
+                tag=f"ablation_mapping_{mapping}",
+            )
+            mapping_rows.append(_ablation_metric_row("mapping", mapping, run_dir, {"mapping": mapping}))
+        except Exception as exc:  # pragma: no cover
+            mapping_rows.append({"ablation_kind": "mapping", "name": mapping, "mapping": mapping, "error": str(exc)})
+            LOGGER.warning("mapping ablation %s failed: %s", mapping, exc)
+    _write_csv(out / "mapping_ablation.csv", mapping_rows)
+    manifest["mapping"] = {"csv": str(out / "mapping_ablation.csv"), "runs": mapping_rows}
+
+    sensor_specs = [
+        ("no_accel", "acc_"),
+        ("no_gyro", "gyro_"),
+        ("no_magnetometer", "mag_"),
+    ]
+    sensor_rows: list[dict[str, Any]] = []
+    for name, prefix in sensor_specs:
+        try:
+            view = _dataset_view(data, view_root, f"sensor__{name}", drop_prefixes=[prefix], seed=seed)
+            run_dir = run_experiment(_formal_m7_cfg(cfg, kstar), view, out, tag=f"ablation_sensor_{name}")
+            sensor_rows.append(_ablation_metric_row("sensor_channel", name, run_dir, {"channel": name}))
+        except Exception as exc:  # pragma: no cover
+            sensor_rows.append({"ablation_kind": "sensor_channel", "name": name, "channel": name, "error": str(exc)})
+            LOGGER.warning("sensor ablation %s failed: %s", name, exc)
+    _write_csv(out / "sensor_channel_ablation.csv", sensor_rows)
+    manifest["sensor_channel"] = {"csv": str(out / "sensor_channel_ablation.csv"), "runs": sensor_rows}
+    return manifest
+
+
 def run_all_experiments(cfg: dict[str, Any], data_dir: str | Path, out_dir: str | Path) -> Path:
     """Run the M0..M10 suite + top-k sweep and write ``runs_index.json``.
 
@@ -647,6 +958,9 @@ def run_all_experiments(cfg: dict[str, Any], data_dir: str | Path, out_dir: str 
         except Exception as exc:  # pragma: no cover - keep the suite going
             LOGGER.warning("baseline %s failed: %s", name, exc)
             index["runs"][name] = {"label": M_LABELS[name], "error": str(exc)}
+
+    if bool(cfg.get("ablation", {}).get("enabled", True)):
+        index["ablations"] = _run_ablation_suites(cfg, data_dir, out, kstar)
 
     (out / "runs_index.json").write_text(json.dumps(index, indent=2, sort_keys=True, default=str), encoding="utf-8")
     LOGGER.info("run_all_experiments done: %d baselines, k*=%d", len(index["runs"]), kstar)

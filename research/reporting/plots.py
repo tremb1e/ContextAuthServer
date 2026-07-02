@@ -478,10 +478,11 @@ def package_ablation(results_dir: Path, fig_dir: Path) -> list[Path]:
 
 
 def privacy_ablation(results_dir: Path, fig_dir: Path) -> list[Path]:
-    """Privacy/feature-mode ablation (M1 full vs M8 no-package vs M0 sensor-only).
+    """Privacy/redaction-level ablation EER bars.
 
-    Uses the available feature-mode-contrasting baselines as a privacy-cost proxy
-    (dropping package / UI structure). Skips if none present.
+    Prefers the explicit ``privacy_ablation.csv`` written by
+    ``run_all_experiments``. Falls back to the older baseline proxy
+    (M1 full vs M8 no-package vs M0 sensor-only) for partial result trees.
 
     Args:
         results_dir: The results root.
@@ -490,7 +491,45 @@ def privacy_ablation(results_dir: Path, fig_dir: Path) -> list[Path]:
     Returns:
         The written figure paths (empty if skipped).
     """
+    rows = _read_csv(results_dir / "privacy_ablation.csv")
+    if rows:
+        labels = [str(r.get("privacy_level") or r.get("name") or i) for i, r in enumerate(rows)]
+        eers = [_to_float(r.get("eer")) for r in rows]
+        fig, ax = plt.subplots(figsize=(max(5, 1.6 * len(labels)), 4))
+        x = np.arange(len(labels))
+        ax.bar(x, [0.0 if not np.isfinite(e) else e for e in eers], color="#59A14F", alpha=0.85)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=25, ha="right")
+        ax.set_ylabel(r"$\mathrm{EER}$")
+        ax.grid(axis="y", alpha=0.25)
+        return save(fig, "privacy_ablation", fig_dir)
     return _grouped_eer_bar(results_dir, fig_dir, ["m0", "m1", "m8"], "privacy_ablation")
+
+
+def feature_ablation(results_dir: Path, fig_dir: Path) -> list[Path]:
+    """Feature/loss-family ablation EER bars from ``feature_ablation.csv``.
+
+    Args:
+        results_dir: The results root.
+        fig_dir: The figures output dir.
+
+    Returns:
+        The written figure paths (empty if skipped).
+    """
+    rows = _read_csv(results_dir / "feature_ablation.csv")
+    if not rows:
+        _skip("feature_ablation", "feature_ablation.csv missing")
+        return []
+    labels = [str(r.get("name", i)) for i, r in enumerate(rows)]
+    eers = [_to_float(r.get("eer")) for r in rows]
+    fig, ax = plt.subplots(figsize=(max(6, 1.25 * len(labels)), 4.2))
+    x = np.arange(len(labels))
+    ax.bar(x, [0.0 if not np.isfinite(e) else e for e in eers], color="#9C755F", alpha=0.85)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=35, ha="right")
+    ax.set_ylabel(r"$\mathrm{EER}$")
+    ax.grid(axis="y", alpha=0.25)
+    return save(fig, "feature_ablation", fig_dir)
 
 
 def mapping_ablation(results_dir: Path, fig_dir: Path) -> list[Path]:
@@ -564,6 +603,7 @@ PLOT_FUNCTIONS: dict[str, Callable[..., list[Path]]] = {
     "weak_label_distribution": weak_label_distribution,
     "package_ablation": package_ablation,
     "privacy_ablation": privacy_ablation,
+    "feature_ablation": feature_ablation,
     "mapping_ablation": mapping_ablation,
     "sensor_channel_ablation": sensor_channel_ablation,
 }

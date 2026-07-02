@@ -41,6 +41,21 @@ def _fmt(value: Any, precision: int = 4) -> str:
         return str(value)
 
 
+def _tex(value: Any) -> str:
+    """Escape a small plain-text value for LaTeX table cells."""
+    text = str(value)
+    return (
+        text.replace("\\", r"\textbackslash{}")
+        .replace("&", r"\&")
+        .replace("%", r"\%")
+        .replace("$", r"\$")
+        .replace("#", r"\#")
+        .replace("_", r"\_")
+        .replace("{", r"\{")
+        .replace("}", r"\}")
+    )
+
+
 def _read_csv(path: Path) -> list[dict[str, str]]:
     """Read a CSV into dict rows (empty if missing)."""
     if not path.exists():
@@ -169,6 +184,46 @@ def per_scene_table(results_dir: str | Path, baseline: str = "m7") -> str:
     return "\n".join(lines) + "\n"
 
 
+def ablation_table(results_dir: str | Path) -> str:
+    """Return a compact LaTeX table over all ablation CSV summaries.
+
+    Args:
+        results_dir: The results root.
+
+    Returns:
+        A LaTeX table string, or a placeholder comment if no ablation CSVs exist.
+    """
+    root = Path(results_dir)
+    rows: list[dict[str, str]] = []
+    for filename, kind in (
+        ("feature_ablation.csv", "feature"),
+        ("privacy_ablation.csv", "privacy"),
+        ("mapping_ablation.csv", "mapping"),
+        ("sensor_channel_ablation.csv", "sensor"),
+    ):
+        for row in _read_csv(root / filename):
+            if row.get("error"):
+                continue
+            label = row.get("name") or row.get("mapping") or row.get("channel") or row.get("privacy_level") or "--"
+            rows.append({"kind": kind, "label": label, "eer": row.get("eer", ""), "roc_auc": row.get("roc_auc", "")})
+    if not rows:
+        return "% ablation_table: no ablation CSVs found\n"
+    lines = [
+        r"\begin{table}[t]",
+        r"\centering",
+        r"\caption{Ablation results: feature, privacy, mapping and sensor-channel variants.}",
+        r"\label{tab:ablations}",
+        r"\begin{tabular}{llrr}",
+        r"\toprule",
+        r"Group & Variant & EER & ROC-AUC \\",
+        r"\midrule",
+    ]
+    for row in rows:
+        lines.append(f"{_tex(row['kind'])} & {_tex(row['label'])} & {_fmt(row['eer'])} & {_fmt(row['roc_auc'])} \\\\")
+    lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
+    return "\n".join(lines) + "\n"
+
+
 def write_latex_tables(results_dir: str | Path, out_path: str | Path) -> Path:
     """Write all LaTeX tables to a single ``.tex`` file.
 
@@ -186,6 +241,7 @@ def write_latex_tables(results_dir: str | Path, out_path: str | Path) -> Path:
         main_results_table(results_dir),
         topk_table(results_dir),
         per_scene_table(results_dir),
+        ablation_table(results_dir),
     ]
     destination = Path(out_path)
     destination.parent.mkdir(parents=True, exist_ok=True)

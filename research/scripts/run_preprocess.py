@@ -35,7 +35,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from research import LEAKAGE_COLUMNS, SCENARIOS
+from research import LEAKAGE_COLUMNS, SCENARIOS, TASK_SCENE_MAPPINGS, canonical_scene_for_task
 from research.config import load_config
 from research.preprocessing.align import align_batches, index_batches
 from research.preprocessing.feature_extractors import (
@@ -75,6 +75,7 @@ def _window_row(
     temperature: float,
     low_conf_prob: float,
     low_conf_margin: float,
+    task_mapping: str,
 ) -> dict[str, Any]:
     """Build the flat parquet row for one window context.
 
@@ -112,12 +113,16 @@ def _window_row(
         flags = list(flags) + ["low_confidence_label"]
 
     # Gold task_category (BUILTIN_TASK only): read from the window's IMU rows.
+    # Store the canonical paper scene in task_category and keep the raw app code
+    # separately for protocol/debugging.
     imu = window_ctx.get("imu_samples")
+    raw_task_category: str | None = None
     task_category: str | None = None
     if imu is not None and not imu.empty and "task_category" in imu:
         values = [v for v in imu["task_category"].tolist() if v is not None]
         if values:
-            task_category = str(values[0])
+            raw_task_category = str(values[0])
+            task_category = canonical_scene_for_task(raw_task_category, task_mapping)
 
     row: dict[str, Any] = {
         "device_id": window_ctx["device_id"],
@@ -140,6 +145,7 @@ def _window_row(
     row["weak_label_low_confidence"] = bool(label["low_confidence"])
     row["quality_flags_json"] = json.dumps(flags, ensure_ascii=False)
     row["task_category"] = task_category
+    row["raw_task_category"] = raw_task_category
     return row
 
 
@@ -154,6 +160,7 @@ def run_preprocess(
     temperature: float = 1.0,
     low_conf_prob: float = 0.35,
     low_conf_margin: float = 0.10,
+    task_mapping: str = "recommended",
 ) -> dict[str, Any]:
     """Run the full preprocessing pipeline and write outputs to ``output_dir``.
 
@@ -174,6 +181,8 @@ def run_preprocess(
     """
     input_dir = Path(input_dir)
     output_dir = ensure_dir(output_dir)
+    if task_mapping not in TASK_SCENE_MAPPINGS:
+        raise ValueError(f"unknown task mapping: {task_mapping!r} (valid: {sorted(TASK_SCENE_MAPPINGS)})")
 
     batches = list(load_batches(input_dir, strict=False))
     LOGGER.info("loaded %d batches from %s", len(batches), input_dir)
@@ -197,6 +206,7 @@ def run_preprocess(
             temperature=temperature,
             low_conf_prob=low_conf_prob,
             low_conf_margin=low_conf_margin,
+            task_mapping=task_mapping,
         )
         for ctx in windows
     ]
@@ -223,6 +233,7 @@ def run_preprocess(
         "weak_label_low_confidence",
         "quality_flags_json",
         "task_category",
+        "raw_task_category",
     ]
     all_columns = id_columns + feature_columns + label_columns
     if rows:
@@ -261,6 +272,7 @@ def run_preprocess(
         "window_size_sec": float(window_size_sec),
         "stride_sec": float(stride_sec),
         "gap_min": float(gap_min),
+        "task_mapping": task_mapping,
         "n_batches": len(batches),
         "n_sensor_rows": int(len(frame)),
         "n_sessions": int(sessioned["session_id"].nunique()) if not sessioned.empty else 0,
@@ -305,6 +317,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="optional config override YAML (defaults merged over default.yaml)",
     )
+    parser.add_argument(
+        "--task-mapping",
+        type=str,
+        default=None,
+        choices=sorted(TASK_SCENE_MAPPINGS),
+        help="raw task_category -> canonical C0..C6 mapping (default: preprocess.task_mapping or recommended)",
+    )
     return parser
 
 
@@ -322,6 +341,7 @@ def main(argv: list[str] | None = None) -> int:
     feature_mode = args.feature_mode or cfg["features"]["mode"]
     labeling_cfg = cfg.get("labeling", {})
     preprocess_cfg = cfg.get("preprocess", {})
+    task_mapping = args.task_mapping or str(preprocess_cfg.get("task_mapping", "recommended"))
 
     report = run_preprocess(
         args.input,
@@ -333,12 +353,14 @@ def main(argv: list[str] | None = None) -> int:
         temperature=float(labeling_cfg.get("temperature", 1.0)),
         low_conf_prob=float(labeling_cfg.get("low_conf_prob", 0.35)),
         low_conf_margin=float(labeling_cfg.get("low_conf_margin", 0.10)),
+        task_mapping=task_mapping,
     )
 
     print("=== preprocess summary ===")
     print(f"input_dir         : {report['input_dir']}")
     print(f"output_dir        : {report['output_dir']}")
     print(f"feature_mode      : {report['feature_mode']}")
+    print(f"task_mapping      : {report['task_mapping']}")
     print(f"n_batches         : {report['n_batches']}")
     print(f"n_sensor_rows     : {report['n_sensor_rows']}")
     print(f"n_devices         : {report['n_devices']}")

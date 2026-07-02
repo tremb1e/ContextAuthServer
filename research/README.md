@@ -234,11 +234,10 @@ each is a *representative* minimal implementation, not a placeholder:
    score vectors, so `roc_curves` renders ROC-AUC **per baseline** as a bar chart proxy
    rather than redrawing true ROC curves (documented in `reporting/plots.py`).
 
-8. **Optional ablation figures.** `mapping_ablation` (recommended vs `alt_c5_nav`) and
-   `sensor_channel_ablation` (accel/gyro/mag) render only if a driver produced
-   `mapping_ablation.csv` / `sensor_channel_ablation.csv` under the results root; the
-   7-expert taxonomy is frozen in this build, so the alternate mapping is an optional
-   artifact and the figures skip-with-message otherwise.
+8. **Automatic ablation drivers.** `run_all_experiments` now writes
+   `feature_ablation.csv`, `privacy_ablation.csv`, `mapping_ablation.csv`, and
+   `sensor_channel_ablation.csv` by default. `--skip-ablations` is only for quick
+   debugging; paper runs should keep the default.
 
 9. **`k=7` == dense-all.** In the top-k sweep, `k = n_experts = 7` aggregates every
    expert (the dense-all mixture), the intended interpretation from the spec.
@@ -254,7 +253,6 @@ each is a *representative* minimal implementation, not a placeholder:
   §六–§二十), [`_recon_hmog.md`](./_recon_hmog.md) (HMOG idioms mirrored for
   metrics/bootstrap), [`_recon_contract.md`](./_recon_contract.md) (exact app↔server data
   contract).
-- **中文文档 (to be added):** a Chinese design/usage document for the `research/` layer
-  will live alongside these recon files (and the server's Chinese doc). Until then, the
-  conclusion-first Chinese narrative is generated into `data/results/report.md` by
-  `make_report`.
+- **中文文档:** [`docs/ContextAuthServer_服务端说明.md`](../docs/ContextAuthServer_服务端说明.md)
+  records the ingest contract, I0..I7 -> C0..C6 task mapping, strict no-text
+  server checks, automatic ablation outputs, and reproducible commands.

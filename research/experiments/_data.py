@@ -11,6 +11,7 @@ manifest always lines up with the data.
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,6 +55,12 @@ def _decode_probs(raw: object) -> list[float]:
         except (ValueError, TypeError):
             pass
     return [1.0 / N_SCENARIOS] * N_SCENARIOS
+
+
+def _stable_window_hash(value: object) -> int:
+    """Return a deterministic non-negative 31-bit hash for a window id."""
+    digest = hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+    return int(digest[:8], 16) % (2**31)
 
 
 @dataclass
@@ -178,7 +185,7 @@ class DatasetBundle:
         )
         # Deterministic per-window hash id (for the hash router / M10).
         hash_ids = torch.tensor(
-            [abs(hash(str(w))) % (2**31) for w in frame.get(WINDOW_COL, pd.Series(range(len(frame))))],
+            [_stable_window_hash(w) for w in frame.get(WINDOW_COL, pd.Series(range(len(frame))))],
             dtype=torch.long,
         )
 

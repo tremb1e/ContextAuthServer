@@ -105,12 +105,14 @@ def _dataset_summary(results_dir: Path, data_dir: Path | None) -> list[str]:
     leak = manifest.get("leakage_check", {})
     lines += [
         f"- 划分协议：`{manifest.get('protocol')}`，特征模式：`{manifest.get('feature_mode')}`，"
-        f"输入维度 input_dim = {manifest.get('input_dim')}。",
+        f"输入维度 input_dim = {manifest.get('input_dim')}，任务映射：`{manifest.get('task_mapping', 'recommended')}`。",
         f"- 用户数 = {len(manifest.get('users', []))}，会话数 = {len(manifest.get('sessions', []))}，"
         f"天数 = {len(manifest.get('days', []))}，包名桶 = {len(manifest.get('package_buckets', []))}。",
         f"- 窗口数（train/val/test）= {manifest.get('n_windows_train')}/{manifest.get('n_windows_val')}/{manifest.get('n_windows_test')}；"
         f"匹配 impostor 对 = {manifest.get('n_impostor_pairs')}。",
         f"- 弱标签分布（top1）：{manifest.get('weak_label_distribution', {})}。",
+        f"- 受控任务金标签分布（canonical C0–C6）：{manifest.get('task_category_distribution', {})}；"
+        f"原始 app 任务分布：{manifest.get('raw_task_category_distribution', {})}。",
         "- **泄漏自检**（全部必须为真）："
         + "，".join(f"{k}={v}" for k, v in leak.items())
         + "。",
@@ -155,7 +157,7 @@ def _rq_sections(results_dir: Path, metrics: dict[str, dict[str, Any]]) -> list[
         "### RQ7 隐私 / 成本 / 部署",
         "- 记录：每窗口推理延迟（`topk_sweep.csv` 的 `latency_ms`）、活跃专家数、活跃参数量、"
         "LZ4 压缩、`encryption:none`（TLS 机密性 + 对压缩字节做 SHA-256 完整性）、drop-all-text。"
-        "隐私/特征模式代价见 `privacy_ablation.pdf`。",
+        "隐私/特征模式代价见 `privacy_ablation.pdf` 与 `feature_ablation.pdf`。",
         "",
     ]
 
@@ -184,7 +186,8 @@ def _limitations_repro(results_dir: Path) -> list[str]:
         "- **合成数据（P0）**：结论仅证明流水线可运行与方法自洽，不代表真实世界效应。",
         "- **最小可用实现**：TTD / 每小时误报为事件级最小实现；容量匹配（M2）为近似（记录参数量）；"
         "频域特征用 numpy rfft；小数据下 by-user 自助法与配对显著性检验功效有限。",
-        "- 备用映射（alt_c5_nav）与单通道消融为可选 S5 产物；缺失对应 CSV 时相关图自动跳过。",
+        "- 现有 Android app 仍是 `I0..I7` 八任务协议；server 研究层通过 `raw_task_category -> C0..C6`"
+        "映射兼容真实采集数据。若 app 未来迁移为原生 `C0..C6`，映射会退化为恒等。",
         "",
         "## 六、可复现性",
         "",

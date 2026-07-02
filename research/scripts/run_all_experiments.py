@@ -36,6 +36,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data", type=Path, required=True, help="dataset dir or datasets root")
     parser.add_argument("--out", type=Path, required=True, help="results root")
     parser.add_argument("--smoke", action="store_true", help="force runtime.smoke=true (tiny/fast)")
+    parser.add_argument("--skip-ablations", action="store_true", help="run only M0..M10 + top-k, skipping ablation suites")
     return parser
 
 
@@ -63,6 +64,8 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(args.config)
     if args.smoke:
         cfg.setdefault("runtime", {})["smoke"] = True
+    if args.skip_ablations:
+        cfg.setdefault("ablation", {})["enabled"] = False
 
     data_dir = _resolve_data_dir(args.data)
     index_path = run_all_experiments(cfg, data_dir, args.out)
@@ -79,6 +82,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {name:>3} {info.get('label',''):<22} ERROR: {info['error']}")
         else:
             print(f"  {name:>3} {info.get('label',''):<22} EER={info.get('eer')}  k={info.get('top_k')}  router={info.get('router')}")
+    ablations = index.get("ablations", {})
+    if ablations:
+        print("ablations   :")
+        for name, info in ablations.items():
+            print(f"  {name:<15} {info.get('csv')}")
     return 0
 
 

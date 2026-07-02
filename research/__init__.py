@@ -47,9 +47,67 @@ SENSOR_TYPES = ["ACCELEROMETER", "GYROSCOPE", "MAGNETIC_FIELD"]
 #: scenario id -> ordinal index (C0 -> 0 ... C6 -> 6).
 SCENARIO_INDEX = {scenario: index for index, scenario in enumerate(SCENARIOS)}
 
-#: EN task name / intuitive description per scenario, mirroring the app's
-#: TaskCategory metadata (see _recon_contract.md §b). Used by the synthetic
-#: generator so BUILTIN_TASK batches carry contract-valid ``task_*`` fields.
+#: Raw task categories accepted in stored batches. ``C0..C6`` is the canonical
+#: research taxonomy; ``I0..I7`` is the current Android app taxonomy observed in
+#: ``ContextAuthlab``. The research pipeline maps raw task ids into canonical
+#: ``C`` scenes and keeps the original value as ``raw_task_category``.
+RAW_TASK_CATEGORIES = [*SCENARIOS, "I0", "I1", "I2", "I3", "I4", "I5", "I6", "I7"]
+
+#: Post-hoc task->scene mappings. ``recommended`` is the default bridge from the
+#: current app's eight task cards to the paper's seven experts. ``alt_c5_nav``
+#: keeps the same seven-expert output space but treats the app's blended
+#: discrete-control/object task differently for the mapping ablation.
+_C_IDENTITY = {scene: scene for scene in SCENARIOS}
+TASK_SCENE_MAPPINGS = {
+    "recommended": {
+        **_C_IDENTITY,
+        "I0": "C0",  # static viewing / reading / passive video
+        "I1": "C1",  # text entry
+        "I2": "C3",  # discrete taps, menus and controls
+        "I3": "C2",  # list browsing
+        "I4": "C2",  # long-form review / scrolling
+        "I5": "C6",  # object/canvas manipulation
+        "I6": "C6",  # spatial capture / phone motion
+        "I7": "C6",  # wrist rotation / high-motion canvas
+    },
+    "alt_c5_nav": {
+        **_C_IDENTITY,
+        "I0": "C0",
+        "I1": "C1",
+        "I2": "C4",  # emphasize structured controls in the blended task
+        "I3": "C2",
+        "I4": "C2",
+        "I5": "C3",  # alternate: target/object manipulation as navigation
+        "I6": "C6",
+        "I7": "C6",
+    },
+}
+
+
+def canonical_scene_for_task(task_category: str | None, mapping: str = "recommended") -> str | None:
+    """Map a raw app task category into the canonical ``C0..C6`` scene id.
+
+    Args:
+        task_category: Raw batch ``task_category`` (``C*``, ``I*`` or ``None``).
+        mapping: Mapping variant name, currently ``recommended`` or
+            ``alt_c5_nav``.
+
+    Returns:
+        The canonical scene id, or ``None`` if the task is absent / unknown.
+
+    Raises:
+        ValueError: If the mapping variant is unknown.
+    """
+    if task_category is None:
+        return None
+    if mapping not in TASK_SCENE_MAPPINGS:
+        raise ValueError(f"unknown task-scene mapping: {mapping!r}")
+    return TASK_SCENE_MAPPINGS[mapping].get(str(task_category))
+
+
+#: EN task name / intuitive description per scenario, mirroring the paper's
+#: canonical C0..C6 taxonomy. Used by the synthetic generator so BUILTIN_TASK
+#: batches carry contract-valid ``task_*`` fields.
 SCENARIO_TASK_META = {
     "C0": ("Hold and read", "Quiescent viewing"),
     "C1": ("Paragraph copy", "Keyboard text entry"),
@@ -67,5 +125,8 @@ __all__ = [
     "LEAKAGE_COLUMNS",
     "SENSOR_TYPES",
     "SCENARIO_INDEX",
+    "RAW_TASK_CATEGORIES",
+    "TASK_SCENE_MAPPINGS",
+    "canonical_scene_for_task",
     "SCENARIO_TASK_META",
 ]

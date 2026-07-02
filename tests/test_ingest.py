@@ -61,6 +61,14 @@ def test_i7_category_index_created(server_client) -> None:
     assert link.exists()
 
 
+def test_c6_category_index_created_for_research_taxonomy(server_client) -> None:
+    batch = sample_batch(task_category="C6")
+    response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
+    assert response.status_code == 200
+    link = _data_dir(server_client) / "devices" / DEVICE_ID / "by_category" / "C6" / "2024-03-09" / f"{batch['batch_id']}.json"
+    assert link.exists()
+
+
 def test_duplicate_batch_is_idempotent_when_payload_matches(server_client) -> None:
     batch = sample_batch()
     env = envelope_for(batch)
@@ -144,38 +152,34 @@ def test_lz4_roundtrip() -> None:
     assert lz4.frame.decompress(compressed) == payload
 
 
-def test_server_accepts_payload_without_secondary_email_scan(server_client) -> None:
+def test_server_rejects_text_redacted_email(server_client) -> None:
     batch = sample_batch(text_redacted="alice@example.com")
     response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
-    assert response.status_code == 200
+    assert response.status_code == 400
+    assert response.json()["detail"] == "schema_validation_failed"
 
 
-def test_server_accepts_payload_without_secondary_card_scan(server_client) -> None:
+def test_server_rejects_text_redacted_card(server_client) -> None:
     batch = sample_batch(text_redacted="4111 1111 1111 1111")
     response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
-    assert response.status_code == 200
+    assert response.status_code == 400
+    assert response.json()["detail"] == "schema_validation_failed"
 
 
-def test_server_accepts_payload_without_secondary_redacted_text_scan(server_client) -> None:
+def test_server_rejects_text_redacted_plain_content(server_client) -> None:
     batch = sample_batch(text_redacted="Alice hello")
     response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
-    assert response.status_code == 200
+    assert response.status_code == 400
+    assert response.json()["detail"] == "schema_validation_failed"
 
 
-def test_ingest_accepts_non_editable_visible_text_and_view_id_resource_name(server_client) -> None:
+def test_ingest_rejects_non_editable_visible_text_but_view_id_field_is_supported(server_client) -> None:
     batch = sample_batch()
     batch["context_events"][0]["root_nodes"][0]["text"] = "visible UI label"
     batch["context_events"][0]["root_nodes"][0]["viewIdResourceName"] = "com.example:id/confirm"
     response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
-    assert response.status_code == 200
-    data_dir = _data_dir(server_client)
-    batch_path = data_dir / "devices" / DEVICE_ID / "2024-03-09" / f"{batch['batch_id']}.json"
-    stored = json.loads(batch_path.read_text(encoding="utf-8"))
-    node = stored["context_events"][0]["root_nodes"][0]
-    assert node["text"] == "visible UI label"
-    assert node["viewIdResourceName"] == "com.example:id/confirm"
-    assert "package_name_hash" not in node
-    assert "view_id_hash" not in node
+    assert response.status_code == 400
+    assert response.json()["detail"] == "schema_validation_failed"
 
 
 def test_server_accepts_legacy_ui_hash_fields_without_secondary_scan(server_client) -> None:

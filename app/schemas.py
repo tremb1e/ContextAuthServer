@@ -9,6 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 DEVICE_ID_RE = re.compile(r"^[a-f0-9]{64}$")
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 TASK_CATEGORIES = {
+    "C0",
+    "C1",
+    "C2",
+    "C3",
+    "C4",
+    "C5",
+    "C6",
     "I0",
     "I1",
     "I2",
@@ -156,8 +163,24 @@ class NodeSnapshot(BaseModel):
     def reject_password_nodes(self) -> "NodeSnapshot":
         if self.password:
             raise ValueError("password_node_must_be_dropped")
-        if self.editable and self.text not in {None, "", "<EDITABLE_TEXT_DROPPED>"}:
-            raise ValueError("editable_text_must_be_dropped")
+        forbidden_extra = {
+            "contentDescription",
+            "content_description",
+            "hintText",
+            "hint_text",
+            "error",
+            "paneTitle",
+            "containerTitle",
+        }
+        extras = set((self.model_extra or {}).keys())
+        if extras & forbidden_extra:
+            raise ValueError("node_forbidden_text_extra_field")
+        if self.text not in {None, ""}:
+            raise ValueError("node_text_must_be_dropped")
+        if self.text_redacted not in {None, ""}:
+            raise ValueError("node_text_redacted_must_be_empty")
+        if self.content_desc_redacted not in {None, ""}:
+            raise ValueError("node_content_description_must_be_dropped")
         return self
 
 
@@ -207,6 +230,12 @@ class ContextEvent(BaseModel):
     window_title_redacted: str | None = None
     root_nodes: list[NodeSnapshot] = Field(default_factory=list)
     redaction_summary: dict[str, int] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def reject_window_title_content(self) -> "ContextEvent":
+        if self.window_title_redacted not in {None, ""}:
+            raise ValueError("window_title_must_be_dropped")
+        return self
 
 
 class ContextFeature(BaseModel):

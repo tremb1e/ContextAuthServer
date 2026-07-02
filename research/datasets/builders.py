@@ -28,7 +28,7 @@ from typing import Any
 
 import pandas as pd
 
-from research import LEAKAGE_COLUMNS, SCENARIOS
+from research import LEAKAGE_COLUMNS, SCENARIOS, TASK_SCENE_MAPPINGS
 from research.datasets.impostors import ImpostorPairs, sample_matched_impostors
 from research.datasets.splits import (
     APP_COL,
@@ -66,6 +66,7 @@ _LABEL_COLUMNS = [
     "weak_label_low_confidence",
     "quality_flags_json",
     "task_category",
+    "raw_task_category",
 ]
 
 
@@ -125,6 +126,22 @@ def _weak_label_distribution(df: pd.DataFrame) -> dict[str, int]:
     """
     counts = Counter(df["weak_label_top1"].astype(str).tolist()) if "weak_label_top1" in df else Counter()
     return {scene: int(counts.get(scene, 0)) for scene in SCENARIOS}
+
+
+def _category_distribution(df: pd.DataFrame, column: str) -> dict[str, int]:
+    """Count a category column, returning an empty dict when absent.
+
+    Args:
+        df: The frame to count.
+        column: The column name.
+
+    Returns:
+        Mapping category value -> count.
+    """
+    if column not in df:
+        return {}
+    counts = Counter(str(v) for v in df[column].dropna().tolist())
+    return {key: int(value) for key, value in sorted(counts.items())}
 
 
 def _sessions_of(df: pd.DataFrame, idx: list[int]) -> set[str]:
@@ -214,6 +231,7 @@ def build_dataset(
     seed: int = 42,
     n_impostor_per_genuine: int = 1,
     name: str | None = None,
+    task_mapping: str = "recommended",
 ) -> Path:
     """Build a leakage-checked dataset from preprocessed windows.
 
@@ -226,6 +244,7 @@ def build_dataset(
         seed: Deterministic split / impostor-sampling salt.
         n_impostor_per_genuine: Impostor windows sampled per genuine test window.
         name: Dataset dir name; defaults to ``{protocol}__{feature_mode}``.
+        task_mapping: Name of the raw task->scene mapping used upstream.
 
     Returns:
         The dataset directory path.
@@ -271,6 +290,7 @@ def build_dataset(
     manifest: dict[str, Any] = {
         "protocol": protocol,
         "feature_mode": feature_mode,
+        "task_mapping": task_mapping,
         "dataset_name": dataset_name,
         "seed": int(seed),
         "input_dim": feature_manifest["input_dim"],
@@ -287,6 +307,17 @@ def build_dataset(
             "val": _weak_label_distribution(split_frames["val"]),
             "test": _weak_label_distribution(split_frames["test"]),
         },
+        "task_category_distribution": {
+            "train": _category_distribution(split_frames["train"], "task_category"),
+            "val": _category_distribution(split_frames["val"], "task_category"),
+            "test": _category_distribution(split_frames["test"], "task_category"),
+        },
+        "raw_task_category_distribution": {
+            "train": _category_distribution(split_frames["train"], "raw_task_category"),
+            "val": _category_distribution(split_frames["val"], "raw_task_category"),
+            "test": _category_distribution(split_frames["test"], "raw_task_category"),
+        },
+        "task_scene_mappings": TASK_SCENE_MAPPINGS,
         "n_genuine_pairs": len(impostors),
         "n_impostor_pairs": len(impostors),
         "n_impostor_exact_matches": int(sum(impostors.matched_exact)),

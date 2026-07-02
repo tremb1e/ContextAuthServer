@@ -10,6 +10,7 @@ preprocess:
   window_size_sec: 5  # window length (seconds)
   stride_sec: 1       # window stride (seconds) -> 4s overlap at default
   gap_min: 10         # session cut on inter-sample gap > this many minutes
+  task_mapping: recommended  # raw app task ids (I0..I7/C0..C6) -> canonical C0..C6
 
 features:
   mode: ui_sensor     # one of: sensor_only, ui_sensor, ui_sensor_no_package,
@@ -48,6 +49,9 @@ loss:
 topk:
   sweep: [1, 2, 3, 4, 5, 6, 7]
   select_on: val        # k* chosen on validation, then frozen
+
+ablation:
+  enabled: true         # run feature/privacy/mapping/sensor ablations in run_all_experiments
 
 report:
   outdir: data/results

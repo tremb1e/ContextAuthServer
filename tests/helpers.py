@@ -20,10 +20,17 @@ def sample_batch(
     batch_id: str | None = None,
     collection_source: str = "BUILTIN_TASK",
     task_category: str | None = "I3",
-    text_redacted: str = "<EMAIL>",
+    text_redacted: str | None = None,
 ) -> dict[str, Any]:
     batch_uuid = batch_id or str(uuid.uuid4())
     task_meta = {
+        "C0": ("Hold and read", "Quiescent viewing"),
+        "C1": ("Paragraph copy", "Keyboard text entry"),
+        "C2": ("Feed browsing", "Continuous scrolling"),
+        "C3": ("Menu navigation", "Discrete navigation"),
+        "C4": ("Simulated phone settings", "Multi-control operation"),
+        "C5": ("Local video playback", "Media playback"),
+        "C6": ("Wrist rotation", "Canvas high motion"),
         "I0": ("Quiet viewing and video", "Static viewing"),
         "I1": ("Text entry and editing", "Text entry"),
         "I2": ("Discrete taps and controls", "Discrete touch"),
@@ -102,7 +109,7 @@ def sample_batch(
                 "foreground_component_name": "com.example.target/.MainActivity",
                 "input_method_visible": False,
                 "coarse_orientation": "portrait",
-                "window_title_redacted": "<DROPPED>",
+                "window_title_redacted": None,
                 "root_nodes": [
                     {
                         "node_id": "node-1",
@@ -113,7 +120,7 @@ def sample_batch(
                         "scrollable": False,
                         "password": False,
                         "child_count": 0,
-                        "text": "确认",
+                        "text": None,
                         "text_redacted": text_redacted,
                         "content_desc_redacted": None,
                         "actions_summary": [],

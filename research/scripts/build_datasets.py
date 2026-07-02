@@ -19,6 +19,7 @@ import json
 from pathlib import Path
 
 from research.config import load_config
+from research import TASK_SCENE_MAPPINGS
 from research.datasets.builders import build_dataset
 from research.datasets.splits import PROTOCOLS
 from research.utils.logging import get_logger
@@ -64,6 +65,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--name", type=str, default=None, help="dataset dir name (default: {protocol}__{feature_mode})")
     parser.add_argument(
+        "--task-mapping",
+        type=str,
+        default=None,
+        choices=sorted(TASK_SCENE_MAPPINGS),
+        help="raw task_category -> canonical C0..C6 mapping recorded in split_manifest",
+    )
+    parser.add_argument(
         "--n-impostor-per-genuine",
         type=int,
         default=1,
@@ -85,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(args.config)
     feature_mode = args.feature_mode or cfg["features"]["mode"]
     seed = int(cfg.get("seed", 42))
+    task_mapping = args.task_mapping or str(cfg.get("preprocess", {}).get("task_mapping", "recommended"))
 
     ds_dir = build_dataset(
         args.input,
@@ -94,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         seed=seed,
         n_impostor_per_genuine=int(args.n_impostor_per_genuine),
         name=args.name,
+        task_mapping=task_mapping,
     )
     manifest = json.loads((ds_dir / "split_manifest.json").read_text(encoding="utf-8"))
 
@@ -102,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"dataset_dir       : {ds_dir}")
     print(f"protocol          : {manifest['protocol']}")
     print(f"feature_mode      : {manifest['feature_mode']}")
+    print(f"task_mapping      : {manifest['task_mapping']}")
     print(f"input_dim         : {manifest['input_dim']}")
     print(f"n_windows (t/v/te): {manifest['n_windows_train']}/{manifest['n_windows_val']}/{manifest['n_windows_test']}")
     print(f"n_genuine_pairs   : {manifest['n_genuine_pairs']}")
