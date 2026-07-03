@@ -116,3 +116,25 @@ $PY -m research.scripts.make_report \
 ## 6. 数据充分性提醒
 
 真实论文结论必须使用多用户、多 session、多天数据。单用户数据只能验证工程链路，不能定义 impostor 对，也不能支撑 EER/FAR/FRR 结论。
+
+## 7. 部署与契约变更须知（2026-07-03）
+
+摄取契约（`app/schemas.py`，尤其 `TASK_CATEGORIES`）与**线上镜像**必须同步：**改了 schema 源码就要重建并重部署镜像——源码提交 ≠ 线上生效**。
+
+线上部署见 `deploy/docker-compose.yml`（容器 `cca-deploy`，镜像 `contextauth/server:deploy`，数据挂载 `deploy/data/paper`）。重建 + 重部署（数据挂载不变）：
+
+```bash
+docker compose -f deploy/docker-compose.yml build
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+上线自检：
+
+```bash
+# 线上 schema 应含 I0..I7
+docker exec cca-deploy python -c "from app.schemas import TASK_CATEGORIES; print(sorted(TASK_CATEGORIES))"
+# 受控任务金标签冒烟：应 stored:true
+python tools/send_sample_batch.py --server http://127.0.0.1:8000 --task-category I7
+```
+
+> 背景：2026-07-03 一次采集出现 71 成功 / 36 隔离（`HTTP 400 schema_validation_failed`）。根因是**线上镜像陈旧（只认 `C0..C6`）**，把 App 的 `I0..I7` 受控任务金标签批次全部拒绝；`THIRD_PARTY_APP`（`task_category=null`）批次不受影响。已通过重建 + 重部署修复并端到端验证。完整分析见 [`docs/0703/`](./0703/00-索引.md)。

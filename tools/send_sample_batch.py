@@ -34,7 +34,7 @@ TASK_META = {
     "I4": ("Long-document review", "Long-form review"),
     "I5": ("Annotate, draw, and drag", "Object manipulation"),
     "I6": ("Scan, frame, and capture", "Spatial capture"),
-    "I7": ("Wrist rotation and motion canvas", "Wrist rotation"),
+    "I7": ("Wrist rotation", "Wrist rotation"),
 }
 
 
@@ -127,15 +127,17 @@ def make_batch(
                 "foreground_component_name": "com.example.target/.MainActivity",
                 "input_method_visible": False,
                 "coarse_orientation": "portrait",
-                "window_title_redacted": "<DROPPED>",
+                "window_title_redacted": None,
                 "root_nodes": [
                     {
                         "node_id": "node-1",
                         "class_name": "android.widget.Button",
                         "viewIdResourceName": "com.example.target:id/confirm",
-                        "text": "确认",
+                        "text": None,
                         "text_redacted": None,
                         "content_desc_redacted": None,
+                        "has_text": True,
+                        "has_content_description": False,
                         "clickable": True,
                         "editable": False,
                         "scrollable": False,
