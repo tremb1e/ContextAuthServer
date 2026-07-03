@@ -23,7 +23,22 @@ def sample_batch(
     text_redacted: str | None = None,
 ) -> dict[str, Any]:
     batch_uuid = batch_id or str(uuid.uuid4())
+    # (task_name, intuitive_description) per task id. CANONICAL is the current app
+    # taxonomy I0..I6 (I6 == wrist rotation after the old I7 -> I6 renumbering;
+    # I0 uses the canonical "Quiet watching and video"). LEGACY rows (old wrist
+    # id I7 and the retired C0..C6) are kept so ingest legacy-compat can still be
+    # exercised; the server accepts the CANONICAL + LEGACY union.
     task_meta = {
+        # canonical I0..I6 (verbatim app enum)
+        "I0": ("Quiet watching and video", "Static viewing"),
+        "I1": ("Text entry and editing", "Text entry"),
+        "I2": ("Discrete taps and controls", "Discrete touch"),
+        "I3": ("List scrolling and selection", "List browsing"),
+        "I4": ("Long-document review", "Long-form review"),
+        "I5": ("Annotate, draw, and drag", "Object manipulation"),
+        "I6": ("Wrist rotation", "Wrist rotation"),
+        # legacy (compat only)
+        "I7": ("Wrist rotation", "Wrist rotation"),
         "C0": ("Hold and read", "Quiescent viewing"),
         "C1": ("Paragraph copy", "Keyboard text entry"),
         "C2": ("Feed browsing", "Continuous scrolling"),
@@ -31,14 +46,6 @@ def sample_batch(
         "C4": ("Simulated phone settings", "Multi-control operation"),
         "C5": ("Local video playback", "Media playback"),
         "C6": ("Wrist rotation", "Canvas high motion"),
-        "I0": ("Quiet viewing and video", "Static viewing"),
-        "I1": ("Text entry and editing", "Text entry"),
-        "I2": ("Discrete taps and controls", "Discrete touch"),
-        "I3": ("List scrolling and selection", "List browsing"),
-        "I4": ("Long-document review", "Long-form review"),
-        "I5": ("Annotate, draw, and drag", "Object manipulation"),
-        "I6": ("Scan, frame, and capture", "Spatial capture"),
-        "I7": ("Wrist rotation and motion canvas", "Wrist rotation"),
     }
     task_name, intuition = task_meta.get(task_category or "", (None, None))
     batch_session_id = str(uuid.uuid4())

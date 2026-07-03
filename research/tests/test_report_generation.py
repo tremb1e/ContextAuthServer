@@ -23,7 +23,7 @@ matplotlib.use("Agg")
 
 from research.reporting import plots, report
 
-_SCENES = ["C0", "C1", "C2", "C3", "C4", "C5", "C6"]
+_SCENES = ["I0", "I1", "I2", "I3", "I4", "I5", "I6"]
 
 
 def _has_cjk(text: str) -> bool:
@@ -69,7 +69,7 @@ def results_dir(tmp_path: Path) -> Path:
             {
                 "eer": 0.2, "roc_auc": 0.82, "pr_auc": 0.7,
                 "eer_by_user_bootstrap": {"mean": 0.2, "ci_lo": 0.15, "ci_hi": 0.25},
-                "per_scene_eer": {"C0": 0.10, "C1": 0.22, "C3": 0.31},
+                "per_scene_eer": {"I0": 0.10, "I1": 0.22, "I3": 0.31},
                 "router_entropy": 1.4, "expert_utilization_entropy": 1.5,
                 "router_probs_mean": [0.2, 0.1, 0.1, 0.15, 0.15, 0.15, 0.15],
                 "expert_utilization": [0.3, 0.1, 0.1, 0.1, 0.1, 0.1, 0.2],

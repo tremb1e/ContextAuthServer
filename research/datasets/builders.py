@@ -28,7 +28,7 @@ from typing import Any
 
 import pandas as pd
 
-from research import LEAKAGE_COLUMNS, SCENARIOS, TASK_SCENE_MAPPINGS
+from research import LEAKAGE_COLUMNS, SCENARIOS
 from research.datasets.impostors import ImpostorPairs, sample_matched_impostors
 from research.datasets.splits import (
     APP_COL,
@@ -231,7 +231,6 @@ def build_dataset(
     seed: int = 42,
     n_impostor_per_genuine: int = 1,
     name: str | None = None,
-    task_mapping: str = "recommended",
 ) -> Path:
     """Build a leakage-checked dataset from preprocessed windows.
 
@@ -244,7 +243,6 @@ def build_dataset(
         seed: Deterministic split / impostor-sampling salt.
         n_impostor_per_genuine: Impostor windows sampled per genuine test window.
         name: Dataset dir name; defaults to ``{protocol}__{feature_mode}``.
-        task_mapping: Name of the raw task->scene mapping used upstream.
 
     Returns:
         The dataset directory path.
@@ -290,7 +288,7 @@ def build_dataset(
     manifest: dict[str, Any] = {
         "protocol": protocol,
         "feature_mode": feature_mode,
-        "task_mapping": task_mapping,
+        "scene_taxonomy": "I0..I6",
         "dataset_name": dataset_name,
         "seed": int(seed),
         "input_dim": feature_manifest["input_dim"],
@@ -317,7 +315,6 @@ def build_dataset(
             "val": _category_distribution(split_frames["val"], "raw_task_category"),
             "test": _category_distribution(split_frames["test"], "raw_task_category"),
         },
-        "task_scene_mappings": TASK_SCENE_MAPPINGS,
         "n_genuine_pairs": len(impostors),
         "n_impostor_pairs": len(impostors),
         "n_impostor_exact_matches": int(sum(impostors.matched_exact)),

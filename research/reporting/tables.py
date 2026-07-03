@@ -28,7 +28,7 @@ _MODEL_LABELS = {
     "m9": "M9 rand-MoE",
     "m10": "M10 hash-MoE",
 }
-_SCENES = ["C0", "C1", "C2", "C3", "C4", "C5", "C6"]
+_SCENES = ["I0", "I1", "I2", "I3", "I4", "I5", "I6"]
 
 
 def _fmt(value: Any, precision: int = 4) -> str:
@@ -198,20 +198,19 @@ def ablation_table(results_dir: str | Path) -> str:
     for filename, kind in (
         ("feature_ablation.csv", "feature"),
         ("privacy_ablation.csv", "privacy"),
-        ("mapping_ablation.csv", "mapping"),
         ("sensor_channel_ablation.csv", "sensor"),
     ):
         for row in _read_csv(root / filename):
             if row.get("error"):
                 continue
-            label = row.get("name") or row.get("mapping") or row.get("channel") or row.get("privacy_level") or "--"
+            label = row.get("name") or row.get("channel") or row.get("privacy_level") or "--"
             rows.append({"kind": kind, "label": label, "eer": row.get("eer", ""), "roc_auc": row.get("roc_auc", "")})
     if not rows:
         return "% ablation_table: no ablation CSVs found\n"
     lines = [
         r"\begin{table}[t]",
         r"\centering",
-        r"\caption{Ablation results: feature, privacy, mapping and sensor-channel variants.}",
+        r"\caption{Ablation results: feature, privacy and sensor-channel variants.}",
         r"\label{tab:ablations}",
         r"\begin{tabular}{llrr}",
         r"\toprule",

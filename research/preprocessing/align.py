@@ -33,6 +33,7 @@ SENSOR_FRAME_COLUMNS: list[str] = [
     "app_package_name",
     "collection_source",
     "task_category",
+    "task_name",
     "sensor_type",
     "timestamp_elapsed_nanos",
     "wall_time_estimated_millis",
@@ -114,6 +115,10 @@ def align_batches(batches: Iterable[dict[str, Any]]) -> pd.DataFrame:
         package = str(batch.get("app_package_name", "unknown"))
         source = str(batch.get("collection_source", ""))
         task_category = batch.get("task_category")
+        # task_name is carried through so the canonical-scene mapping can tell the
+        # new wrist I6 from the deleted spatial-capture "scan" I6 (see
+        # research.canonical_scene_for_task).
+        task_name = batch.get("task_name")
         base = int(batch.get("base_elapsed_nanos", 0))
         started = int(batch.get("started_at_wall_millis", 0))
         order_index = batch_order_map.get((device_id, batch_id), 0)
@@ -126,6 +131,7 @@ def align_batches(batches: Iterable[dict[str, Any]]) -> pd.DataFrame:
                     "app_package_name": package,
                     "collection_source": source,
                     "task_category": task_category,
+                    "task_name": task_name,
                     "sensor_type": str(sample.get("sensor_type", "")),
                     "timestamp_elapsed_nanos": int(sample.get("timestamp_elapsed_nanos", 0)),
                     "wall_time_estimated_millis": int(sample.get("wall_time_estimated_millis", 0)),

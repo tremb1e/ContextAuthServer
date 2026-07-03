@@ -4,7 +4,7 @@ Asserts:
 
 * every synthetic batch record satisfies the server schema contract:
   ``diagnostics.redaction_applied is True``, ``diagnostics.encryption == "none"``,
-  ``diagnostics.compression == "lz4_frame"``, ``task_category`` in C0..C6, and a
+  ``diagnostics.compression == "lz4_frame"``, ``task_category`` in I0..I6, and a
   64-hex ``device_id``;
 * no batch node leaks forbidden content (no password node, no surviving text
   field) — checked via the pipeline's own defensive

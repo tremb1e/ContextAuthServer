@@ -450,9 +450,22 @@ def _extract_imu(imu: pd.DataFrame) -> dict[str, float]:
         out["orient_pitch_std"] = float(pitch.std())
         out["orient_roll_mean"] = float(roll.mean())
         out["orient_roll_std"] = float(roll.std())
-        # IMU-derived landscape bool (ALLOWED): |roll| near +-90 deg.
-        roll_abs_mean = float(np.mean(np.abs(roll)))
-        out["orient_landscape"] = 1.0 if roll_abs_mean > (np.pi / 4.0) else 0.0
+        # IMU-derived landscape bool (ALLOWED; NOT the uploaded coarse_orientation).
+        # Gravity dominates the low-frequency accelerometer signal: held upright in
+        # portrait it lies along the device y-axis, in landscape along x. So the
+        # screen is landscape iff the mean gravity vector's x-component dominates
+        # its y-component. FIX (2026-07-03, 0703 analysis §8.4): the old
+        # ``|roll|>pi/4`` test was INVERTED — roll==atan2(ay,az) is ~+-pi/2 for
+        # upright portrait (gravity on +y), so portrait was flagged landscape==1
+        # and true landscape read ~0.44. The new I0/I5 weak-label rules depend on
+        # this boolean being correct (portrait~=0, landscape~=1).
+        gx = float(np.mean(ax_m))
+        gy = float(np.mean(ay_m))
+        # A phone lying flat (gravity ~ +z) leaves gx~=gy~=0; the strict ``>`` then
+        # resolves the tie to 0.0 / portrait. That ambiguity is acceptable: a flat
+        # device has no meaningful screen orientation, and the I0/I5 rules that read
+        # this boolean key on in-hand held postures, not flat-on-table rest.
+        out["orient_landscape"] = 1.0 if abs(gx) > abs(gy) else 0.0
 
     if mag is not None:
         heading = np.arctan2(mag[:, 1], mag[:, 0])

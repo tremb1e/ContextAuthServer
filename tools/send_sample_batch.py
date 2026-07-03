@@ -15,6 +15,8 @@ from urllib import request
 import lz4.frame
 
 
+# Canonical app task classes I0..I6 (2026-07-03), plus legacy I7 so the tool can
+# still exercise the server's backward-compat acceptance path.
 TASK_CATEGORIES = [
     "I0",
     "I1",
@@ -23,18 +25,18 @@ TASK_CATEGORIES = [
     "I4",
     "I5",
     "I6",
-    "I7",
+    "I7",  # legacy (old wrist id; new APK emits I6). Kept for compat testing.
 ]
 
 TASK_META = {
-    "I0": ("Quiet viewing and video", "Static viewing"),
+    "I0": ("Quiet watching and video", "Static viewing"),
     "I1": ("Text entry and editing", "Text entry"),
     "I2": ("Discrete taps and controls", "Discrete touch"),
     "I3": ("List scrolling and selection", "List browsing"),
     "I4": ("Long-document review", "Long-form review"),
     "I5": ("Annotate, draw, and drag", "Object manipulation"),
-    "I6": ("Scan, frame, and capture", "Spatial capture"),
-    "I7": ("Wrist rotation", "Wrist rotation"),
+    "I6": ("Wrist rotation", "Wrist rotation"),
+    "I7": ("Wrist rotation", "Wrist rotation"),  # legacy alias of the new I6
 }
 
 
@@ -230,7 +232,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server", default="http://127.0.0.1:8000")
     parser.add_argument("--count", type=int, default=1)
-    parser.add_argument("--task-category", default="C3")
+    parser.add_argument("--task-category", default="I2")
     parser.add_argument("--device-id")
     parser.add_argument("--device-suffix", default="fixed")
     parser.add_argument("--seed", type=int, default=7)

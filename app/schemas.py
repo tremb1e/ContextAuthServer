@@ -8,23 +8,22 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 DEVICE_ID_RE = re.compile(r"^[a-f0-9]{64}$")
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
-TASK_CATEGORIES = {
-    "C0",
-    "C1",
-    "C2",
-    "C3",
-    "C4",
-    "C5",
-    "C6",
-    "I0",
-    "I1",
-    "I2",
-    "I3",
-    "I4",
-    "I5",
-    "I6",
-    "I7",
-}
+
+# Task-category ingest contract (2026-07-03).
+#
+# CANONICAL is the current app taxonomy: 7 task classes I0..I6 (I6 == wrist
+# rotation after the old I7 -> I6 renumbering; the old spatial-capture I6 was
+# deleted). LEGACY holds ids that only older APKs / older on-disk data emit —
+# the old wrist id ``I7`` and the retired ``C0..C6`` research taxonomy.
+#
+# Ingest validates against the UNION so a still-installed old APK is NEVER
+# rejected: on the morning of 2026-07-03 a stricter mirror that dropped legacy
+# ids quarantined 36 real batches. Keeping LEGACY here is that regression fix.
+# task_name content is intentionally NOT validated (unchanged); the research
+# layer disambiguates/remaps legacy ids downstream.
+CANONICAL_TASK_CATEGORIES = {"I0", "I1", "I2", "I3", "I4", "I5", "I6"}
+LEGACY_TASK_CATEGORIES = {"I7", "C0", "C1", "C2", "C3", "C4", "C5", "C6"}
+TASK_CATEGORIES = CANONICAL_TASK_CATEGORIES | LEGACY_TASK_CATEGORIES
 
 
 class TimeSyncConfig(BaseModel):

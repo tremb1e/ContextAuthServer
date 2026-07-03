@@ -1,7 +1,8 @@
 """Deterministic synthetic ContextAuth data generator.
 
 Simulates multi-user / multi-day / multi-session collection across the 7
-interaction scenarios (C0..C6), emitting RAW 3-channel sensor samples
+interaction scenarios (I0..I6, the app's own task classes), emitting RAW
+3-channel sensor samples
 (accelerometer / gyroscope / magnetic field @ 100 Hz), UI ``context_events``
 with drop-all-text ``NodeSnapshot`` trees, ``context_features`` (INCLUDING the
 leakage columns, which exist in real data), timing-only ``touch_events`` and a
@@ -109,53 +110,59 @@ class ScenarioProfile:
     landscape: bool
     node_count: tuple[int, int]  # (min, max)
     touch_rate_hz: float
+    # webview: emit the scrollable container as a WebView (doc) instead of a
+    # RecyclerView (list) — this is what separates I4 long-form review (webview)
+    # from I3 list browsing (list) for the weak labeler.
+    webview: bool = False
 
 
 #: Scenario id -> behavioural profile. Values chosen so per-class synthetic
-#: windows are separable by the weak-label scoring rules (_recon_spec §4).
+#: windows are separable by the weak-label scoring rules
+#: (:mod:`research.labeling.interaction_states`). Keyed by the app's own 7 task
+#: classes I0..I6 (2026-07-03 taxonomy).
 PROFILES: dict[str, ScenarioProfile] = {
-    "C0": ScenarioProfile(  # QUIESCENT_VIEWING: hold and read, very low motion
+    "I0": ScenarioProfile(  # STATIC_VIEWING: quiet watching + video, very low motion
         accel=(9.81, 0.05), gyro=(0.0, 0.02), mag=(30.0, 0.3),
         event_types=("TYPE_WINDOW_CONTENT_CHANGED",), event_rate_hz=0.2,
         editable=False, scrollable=False, clickable=False, checkable=False,
         surface_like=False, ime_visible=False, landscape=False,
         node_count=(8, 16), touch_rate_hz=0.1),
-    "C1": ScenarioProfile(  # KEYBOARD_TEXT_ENTRY: typing, editable + IME
+    "I1": ScenarioProfile(  # TEXT_ENTRY: typing, editable + IME
         accel=(9.81, 0.12), gyro=(0.0, 0.06), mag=(30.0, 0.5),
         event_types=("TYPE_VIEW_TEXT_CHANGED", "TYPE_VIEW_FOCUSED", "TYPE_WINDOW_CONTENT_CHANGED"),
         event_rate_hz=3.0, editable=True, scrollable=False, clickable=True, checkable=False,
         surface_like=False, ime_visible=True, landscape=False,
         node_count=(12, 24), touch_rate_hz=3.0),
-    "C2": ScenarioProfile(  # CONTINUOUS_SCROLLING: feed browsing
-        accel=(9.81, 0.2), gyro=(0.0, 0.15), mag=(30.0, 0.6),
-        event_types=("TYPE_VIEW_SCROLLED", "TYPE_WINDOW_CONTENT_CHANGED"),
-        event_rate_hz=4.0, editable=False, scrollable=True, clickable=False, checkable=False,
-        surface_like=False, ime_visible=False, landscape=False,
-        node_count=(20, 40), touch_rate_hz=1.5),
-    "C3": ScenarioProfile(  # DISCRETE_NAVIGATION: menu navigation, clicks
+    "I2": ScenarioProfile(  # DISCRETE_TOUCH: taps, menus + structured controls
         accel=(9.81, 0.18), gyro=(0.0, 0.12), mag=(30.0, 0.6),
         event_types=("TYPE_VIEW_CLICKED", "TYPE_WINDOW_STATE_CHANGED", "TYPE_WINDOW_CONTENT_CHANGED"),
-        event_rate_hz=1.5, editable=False, scrollable=False, clickable=True, checkable=False,
+        event_rate_hz=1.5, editable=False, scrollable=False, clickable=True, checkable=True,
         surface_like=False, ime_visible=False, landscape=False,
-        node_count=(10, 22), touch_rate_hz=1.0),
-    "C4": ScenarioProfile(  # STRUCTURED_CONTROL: switches/checkboxes/sliders
-        accel=(9.81, 0.16), gyro=(0.0, 0.1), mag=(30.0, 0.6),
-        event_types=("TYPE_VIEW_CLICKED", "TYPE_VIEW_FOCUSED", "TYPE_WINDOW_CONTENT_CHANGED"),
-        event_rate_hz=1.2, editable=True, scrollable=False, clickable=True, checkable=True,
+        node_count=(12, 24), touch_rate_hz=1.0),
+    "I3": ScenarioProfile(  # LIST_BROWSING: list scroll + item selection
+        accel=(9.81, 0.2), gyro=(0.0, 0.15), mag=(30.0, 0.6),
+        event_types=("TYPE_VIEW_SCROLLED", "TYPE_VIEW_CLICKED", "TYPE_WINDOW_CONTENT_CHANGED"),
+        event_rate_hz=4.0, editable=False, scrollable=True, clickable=True, checkable=False,
         surface_like=False, ime_visible=False, landscape=False,
-        node_count=(14, 28), touch_rate_hz=0.8),
-    "C5": ScenarioProfile(  # MEDIA_PLAYBACK: video, landscape, stable large surface
-        accel=(9.81, 0.06), gyro=(0.0, 0.03), mag=(30.0, 0.35),
-        event_types=("TYPE_WINDOW_CONTENT_CHANGED",), event_rate_hz=0.1,
+        node_count=(20, 40), touch_rate_hz=1.5),
+    "I4": ScenarioProfile(  # LONG_FORM_REVIEW: continuous doc/webview scroll, ~no clicks
+        accel=(9.81, 0.15), gyro=(0.0, 0.1), mag=(30.0, 0.55),
+        event_types=("TYPE_VIEW_SCROLLED",), event_rate_hz=2.0,
+        editable=False, scrollable=True, clickable=False, checkable=False,
+        surface_like=False, ime_visible=False, landscape=False,
+        node_count=(15, 30), touch_rate_hz=0.5, webview=True),
+    "I5": ScenarioProfile(  # OBJECT_MANIPULATION: annotate/draw/drag on a canvas
+        accel=(9.81, 0.35), gyro=(0.0, 0.2), mag=(30.0, 0.8),
+        event_types=("TYPE_WINDOW_CONTENT_CHANGED",), event_rate_hz=0.3,
         editable=False, scrollable=False, clickable=False, checkable=False,
         surface_like=True, ime_visible=False, landscape=True,
-        node_count=(4, 8), touch_rate_hz=0.05),
-    "C6": ScenarioProfile(  # CANVAS_HIGH_MOTION: wrist rotation, high energy
+        node_count=(4, 10), touch_rate_hz=4.0),
+    "I6": ScenarioProfile(  # WRIST_ROTATION: high rotation energy, ~no touch
         accel=(9.81, 1.2), gyro=(0.0, 1.5), mag=(30.0, 3.0),
         event_types=("TYPE_WINDOW_CONTENT_CHANGED",), event_rate_hz=0.3,
         editable=False, scrollable=False, clickable=False, checkable=False,
-        surface_like=True, ime_visible=False, landscape=False,
-        node_count=(3, 6), touch_rate_hz=4.0),
+        surface_like=False, ime_visible=False, landscape=False,
+        node_count=(3, 6), touch_rate_hz=0.05),
 }
 
 
@@ -347,6 +354,10 @@ def _build_nodes(rng: np.random.Generator, profile: ScenarioProfile) -> list[dic
                 "bottom": top + int(rng.integers(40, 240)),
             }
             class_name = _class_name_for(editable, scrollable, checkable, clickable)
+            # Long-form review scrolls a document/webview, not a list — emit the
+            # scrollable container as a WebView so ui_webview (not ui_list) fires.
+            if profile.webview and scrollable and not editable:
+                class_name = "android.webkit.WebView"
         has_text = bool(rng.random() < 0.6)
         nodes.append(
             {
@@ -501,7 +512,7 @@ def _build_context_feature(
         event: The referenced context event.
         computed_at_wall_millis: Feature computation wall time (ms).
         task_fields: The batch task-label fields (echoed here).
-        scenario: The ground-truth scenario id (C0..C6).
+        scenario: The ground-truth scenario id (I0..I6).
         orientation: Coarse orientation string (LEAKAGE).
 
     Returns:
@@ -510,10 +521,13 @@ def _build_context_feature(
     node_summary = _summarize_nodes(event["root_nodes"])
     editable_count = node_summary["editable_count"]
     ime_visible = bool(profile.ime_visible)
-    game_like = 0.85 + 0.1 * rng.random() if scenario == "C6" else 0.05 * rng.random()
-    media_like = 0.8 + 0.15 * rng.random() if scenario == "C5" else 0.1 * rng.random()
-    list_like = 0.8 + 0.15 * rng.random() if scenario == "C2" else 0.1 * rng.random()
-    form_like = 0.7 + 0.2 * rng.random() if scenario in {"C1", "C4"} else 0.1 * rng.random()
+    # LEAKAGE column raw values (excluded downstream) — plausible per I0..I6 class:
+    # high-motion manipulation/rotation (I5/I6) look "game-like"; I0 is media;
+    # I3/I4 are list/doc scrolling; I1/I2 are text-entry / control forms.
+    game_like = 0.85 + 0.1 * rng.random() if scenario in {"I5", "I6"} else 0.05 * rng.random()
+    media_like = 0.8 + 0.15 * rng.random() if scenario == "I0" else 0.1 * rng.random()
+    list_like = 0.8 + 0.15 * rng.random() if scenario in {"I3", "I4"} else 0.1 * rng.random()
+    form_like = 0.7 + 0.2 * rng.random() if scenario in {"I1", "I2"} else 0.1 * rng.random()
     return {
         "feature_id": _uuid_from(rng),
         "event_id": event["event_id"],
@@ -601,7 +615,7 @@ def _build_batch(
         device_id: 64-hex device id.
         session_id: Session id (== task_session_id for BUILTIN_TASK).
         day_id: Human day id (for provenance only; not a schema field).
-        scenario: Ground-truth scenario id (C0..C6).
+        scenario: Ground-truth scenario id (I0..I6).
         started_wall_millis: Batch start wall time (ms).
         base_elapsed_nanos: Elapsed-clock origin for sensor timestamps.
         duration_sec: Batch duration (seconds).

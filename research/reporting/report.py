@@ -66,7 +66,7 @@ def _executive_summary(results_dir: Path, metrics: dict[str, dict[str, Any]]) ->
     lines = [
         "## 一、执行摘要（结论先行）",
         "",
-        "- **核心方法（M7 weak-MoE）**：7 专家（C0–C6）Mixture-of-Experts，"
+        "- **核心方法（M7 weak-MoE）**：7 专家（I0–I6，即 App 的 7 个任务类）Mixture-of-Experts，"
         "学习式弱监督路由 + top-$k^*$ 稀疏门控，认证采用原型/余弦验证（enroll 与 query 会话严格不相交）。",
         f"- **最优专家数 $k^*$**：在**验证集**上冻结选出 $k^*={kstar}$，"
         "遵循与窗口长度搜索一致的“仅在验证/调参子集上选择、测试集只评一次”的纪律。",
@@ -105,14 +105,14 @@ def _dataset_summary(results_dir: Path, data_dir: Path | None) -> list[str]:
     leak = manifest.get("leakage_check", {})
     lines += [
         f"- 划分协议：`{manifest.get('protocol')}`，特征模式：`{manifest.get('feature_mode')}`，"
-        f"输入维度 input_dim = {manifest.get('input_dim')}，任务映射：`{manifest.get('task_mapping', 'recommended')}`。",
+        f"输入维度 input_dim = {manifest.get('input_dim')}，场景体系：`{manifest.get('scene_taxonomy', 'I0..I6')}`（App 原生 7 任务，1:1，无 8→7 映射）。",
         f"- 用户数 = {len(manifest.get('users', []))}，会话数 = {len(manifest.get('sessions', []))}，"
         f"天数 = {len(manifest.get('days', []))}，包名桶 = {len(manifest.get('package_buckets', []))}。",
         f"- 窗口数（train/val/test）= {manifest.get('n_windows_train')}/{manifest.get('n_windows_val')}/{manifest.get('n_windows_test')}；"
         f"匹配 impostor 对 = {manifest.get('n_impostor_pairs')}。",
         f"- 弱标签分布（top1）：{manifest.get('weak_label_distribution', {})}。",
-        f"- 受控任务金标签分布（canonical C0–C6）：{manifest.get('task_category_distribution', {})}；"
-        f"原始 app 任务分布：{manifest.get('raw_task_category_distribution', {})}。",
+        f"- 受控任务金标签分布（canonical I0–I6）：{manifest.get('task_category_distribution', {})}；"
+        f"原始 app 任务分布（含 legacy I7/C*）：{manifest.get('raw_task_category_distribution', {})}。",
         "- **泄漏自检**（全部必须为真）："
         + "，".join(f"{k}={v}" for k, v in leak.items())
         + "。",
@@ -170,7 +170,7 @@ def _expert_specialization(results_dir: Path, metrics: dict[str, dict[str, Any]]
         "",
         f"- 路由熵 router_entropy = {_fmt(m7.get('router_entropy'))}，"
         f"专家利用熵 expert_utilization_entropy = {_fmt(m7.get('expert_utilization_entropy'))}。",
-        "- 每场景的专家激活矩阵见 `expert_scene_heatmap.pdf`（行=弱标签场景，列=专家 C0–C6），"
+        "- 每场景的专家激活矩阵见 `expert_scene_heatmap.pdf`（行=弱标签场景，列=专家 I0–I6），"
         "专家利用率见 `expert_utilization.pdf`。",
         "- 在 `leave_app_out` 协议下应额外关注弱标签分布漂移、KL 与场景激活漂移，"
         "以区分“编码器退化”与“路由弱监督失效”（OOD 路由鲁棒性）。",
@@ -186,8 +186,9 @@ def _limitations_repro(results_dir: Path) -> list[str]:
         "- **合成数据（P0）**：结论仅证明流水线可运行与方法自洽，不代表真实世界效应。",
         "- **最小可用实现**：TTD / 每小时误报为事件级最小实现；容量匹配（M2）为近似（记录参数量）；"
         "频域特征用 numpy rfft；小数据下 by-user 自助法与配对显著性检验功效有限。",
-        "- 现有 Android app 仍是 `I0..I7` 八任务协议；server 研究层通过 `raw_task_category -> C0..C6`"
-        "映射兼容真实采集数据。若 app 未来迁移为原生 `C0..C6`，映射会退化为恒等。",
+        "- **任务体系（2026-07-03）**：金标/场景/专家 = App 原生 7 任务 `I0..I6`（1:1，恒等，无 8→7 映射）。"
+        "旧盘数据经 legacy 重映射消化：`I7`→`I6`（手腕转动重编号）；旧 `I6` 空间采集（task_name=\"Scan, frame, and capture\"）"
+        "与旧 `C0..C6` 一律置 `scene=None`、不计金标。弱标注规则为按新 7 类重键的启发式初版，质量校准属后续 P1 工作。",
         "",
         "## 六、可复现性",
         "",

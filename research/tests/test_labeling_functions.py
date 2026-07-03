@@ -1,10 +1,10 @@
 """Weak-labeling functions: per-class top1 + mixed top-k + no leakage — §15.1.4.
 
-Asserts:
+Asserts (for the I0..I6 taxonomy):
 
 * for each of the 7 scenarios a hand-built synthetic feature dict (with that
   scenario's cues turned on) yields ``top1 == that scenario``;
-* a mixed window's ``topk`` contains the expected competing scenarios;
+* a scroll-ambiguous window keeps both list (I3) and long-form (I4) in top-k;
 * the labeler reads ONLY its allow-list (``LABEL_FEATURE_KEYS``), which is
   disjoint from ``LEAKAGE_COLUMNS`` — injecting large values into the 4 leakage
   columns does NOT change the output (they are never read);
@@ -20,13 +20,21 @@ from research.labeling.interaction_states import LABEL_FEATURE_KEYS, topk, weak_
 
 # Per-scenario cue dicts (only allow-list keys are read by the labeler).
 _PER_CLASS_CUES: dict[str, dict[str, float]] = {
-    "C0": {"evt_rate": 0.1, "ui_stable_ms": 3000, "motion_energy_low": 0.95, "motion_energy_high": 0.0, "ui_surface_like": 0.0, "ui_node_count_mean": 12},
-    "C1": {"evt_textchanged_count": 5, "ui_editable_count": 3, "ui_focusable_count": 2, "evt_focus_count": 2, "evt_rate": 3.0},
-    "C2": {"evt_scroll_count": 6, "ui_scrollable_count": 3, "ui_list": 1.0, "ui_scroll_indicator": 1.0, "evt_rate": 4.0},
-    "C3": {"evt_click_count": 3, "evt_windowstate_count": 2, "ui_treediff_nodedelta": 10, "ui_treediff_categoryl1": 5, "evt_rate": 1.5},
-    "C4": {"ui_form_like_control_count": 3, "ui_checked_count": 2, "ui_selected_count": 1, "evt_click_count": 2, "ui_editable_count": 2, "ui_treediff_nodedelta": 2.0, "evt_rate": 1.2},
-    "C5": {"ui_surface_like": 1.0, "ui_node_count_mean": 5, "motion_energy_high": 0.0, "ui_stable_ms": 9000, "evt_rate": 0.05, "orient_landscape": 1.0},
-    "C6": {"ui_surface_like": 1.0, "ui_node_count_mean": 4, "motion_energy_high": 0.9, "gyro_burst_count": 10, "gyro_mag_mean": 1.0, "touch_rate": 4.0, "evt_rate": 0.3, "motion_energy_low": 0.0},
+    # STATIC_VIEWING: a landscape video surface at low motion (also covers plain
+    # reading via the low event-rate / stable-UI / low-motion cues).
+    "I0": {"evt_rate": 0.1, "ui_stable_ms": 3000, "motion_energy_low": 0.95, "motion_energy_high": 0.0, "ui_surface_like": 1.0, "orient_landscape": 1.0, "ui_node_count_mean": 6, "touch_rate": 0.1},
+    # TEXT_ENTRY: typing into a focused editable with the IME up.
+    "I1": {"evt_textchanged_count": 5, "ui_editable_count": 3, "ui_focusable_count": 2, "evt_focus_count": 2, "evt_rate": 3.0},
+    # DISCRETE_TOUCH: taps + window-state changes + structured controls.
+    "I2": {"evt_click_count": 3, "evt_windowstate_count": 2, "ui_form_like_control_count": 3, "ui_checked_count": 2, "ui_treediff_nodedelta": 6, "evt_rate": 1.5, "ui_node_count_mean": 18},
+    # LIST_BROWSING: list scroll with item selection.
+    "I3": {"evt_scroll_count": 6, "ui_scrollable_count": 3, "ui_list": 1.0, "evt_click_count": 1, "ui_selected_count": 1, "evt_rate": 4.0, "touch_rate": 1.5, "ui_node_count_mean": 28},
+    # LONG_FORM_REVIEW: continuous doc/webview scroll, ~no clicks, long dwell.
+    "I4": {"evt_scroll_count": 6, "ui_webview": 1.0, "ui_scrollable_count": 2, "evt_click_count": 0, "ui_stable_ms": 5000, "ui_list": 0.0, "evt_rate": 2.0, "ui_node_count_mean": 22},
+    # OBJECT_MANIPULATION: high-touch drag on a landscape canvas at mid motion.
+    "I5": {"touch_rate": 4.0, "ui_surface_like": 1.0, "motion_energy_mid": 0.6, "motion_energy_high": 0.1, "orient_landscape": 1.0, "evt_rate": 0.3, "ui_node_count_mean": 6},
+    # WRIST_ROTATION: extreme rotation energy, ~no touch, low UI event rate.
+    "I6": {"motion_energy_high": 0.9, "gyro_burst_count": 10, "gyro_mag_mean": 1.0, "touch_rate": 0.0, "evt_rate": 0.3, "ui_node_count_mean": 4, "motion_energy_low": 0.0},
 }
 
 
@@ -49,35 +57,35 @@ def test_per_class_top1_is_correct() -> None:
         assert out["topk"][0] == scene
 
 
-def test_mixed_window_topk_contains_expected() -> None:
-    """A structured-control window that also clicks/navigates keeps C3 in top-k."""
+def test_mixed_scroll_window_topk_contains_list_and_longform() -> None:
+    """A scroll-ambiguous window (list + doc cues) keeps both I3 and I4 in top-k."""
     mixed = {
-        "ui_form_like_control_count": 3, "ui_checked_count": 2, "evt_click_count": 2,
-        "ui_editable_count": 2, "evt_windowstate_count": 2, "ui_treediff_nodedelta": 3.0,
-        "evt_rate": 1.2,
+        "evt_scroll_count": 6, "ui_scrollable_count": 3, "ui_list": 1.0, "ui_webview": 1.0,
+        "evt_click_count": 0, "ui_stable_ms": 5000, "touch_rate": 1.0, "ui_node_count_mean": 25,
+        "evt_rate": 3.0,
     }
     out = weak_label(mixed, topk_k=3)
-    assert out["top1"] == "C4"
-    assert "C3" in out["topk"], f"expected navigation cue to keep C3 in top-k, got {out['topk']}"
+    assert out["top1"] == "I3"
+    assert "I4" in out["topk"], f"expected the long-form sibling to stay in top-k, got {out['topk']}"
 
 
 def test_leakage_columns_are_never_read() -> None:
     """Injecting huge values into the 4 leakage columns does not change the output."""
-    base = {"evt_scroll_count": 6, "ui_scrollable_count": 3, "ui_list": 1.0, "evt_rate": 4.0}
+    base = {"evt_scroll_count": 6, "ui_scrollable_count": 3, "ui_list": 1.0, "evt_rate": 4.0, "touch_rate": 1.0, "ui_node_count_mean": 25}
     poisoned = dict(base)
     for col in LEAKAGE_COLUMNS:
         poisoned[col] = 1e6  # a value that WOULD dominate if it were ever read
     a = weak_label(base)
     b = weak_label(poisoned)
     assert np.allclose(np.asarray(a["probs"]), np.asarray(b["probs"]))
-    assert a["top1"] == b["top1"] == "C2"
+    assert a["top1"] == b["top1"] == "I3"
 
 
 def test_topk_helper_orders_and_clamps() -> None:
     """``topk`` returns descending scenario ids and clamps k to [1, N]."""
-    scores = np.array([0.0, 6.0, 1.0, 5.0, 2.0, 4.0, 3.0])  # argmax at C1
-    assert topk(scores, 1) == ["C1"]
-    assert topk(scores, 3) == ["C1", "C3", "C5"]
+    scores = np.array([0.0, 6.0, 1.0, 5.0, 2.0, 4.0, 3.0])  # argmax at I1
+    assert topk(scores, 1) == ["I1"]
+    assert topk(scores, 3) == ["I1", "I3", "I5"]
     assert len(topk(scores, 99)) == N_SCENARIOS  # clamped
     assert len(topk(scores, 0)) == 1  # clamped up to 1
     assert set(topk(scores, N_SCENARIOS)) == set(SCENARIOS)

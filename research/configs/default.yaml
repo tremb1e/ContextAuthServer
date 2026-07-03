@@ -10,7 +10,9 @@ preprocess:
   window_size_sec: 5  # window length (seconds)
   stride_sec: 1       # window stride (seconds) -> 4s overlap at default
   gap_min: 10         # session cut on inter-sample gap > this many minutes
-  task_mapping: recommended  # raw app task ids (I0..I7/C0..C6) -> canonical C0..C6
+  # Scene/gold space == the app's own 7 task classes I0..I6 (identity; no 8->7
+  # mapping). Legacy on-disk ids (I7 -> I6; C*/deleted-scan-I6 -> dropped) are
+  # digested by research.canonical_scene_for_task — there is no mapping knob.
 
 features:
   mode: ui_sensor     # one of: sensor_only, ui_sensor, ui_sensor_no_package,
@@ -51,7 +53,7 @@ topk:
   select_on: val        # k* chosen on validation, then frozen
 
 ablation:
-  enabled: true         # run feature/privacy/mapping/sensor ablations in run_all_experiments
+  enabled: true         # run feature/privacy/sensor-channel ablations in run_all_experiments
 
 report:
   outdir: data/results

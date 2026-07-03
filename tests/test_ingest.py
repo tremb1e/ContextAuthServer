@@ -53,7 +53,23 @@ def test_by_category_index_created(server_client) -> None:
         assert not Path(link.readlink()).is_absolute()
 
 
-def test_i7_category_index_created(server_client) -> None:
+def test_all_canonical_categories_accepted(server_client) -> None:
+    """Every canonical task class I0..I6 is accepted and indexed by category."""
+    for category in ("I0", "I1", "I2", "I3", "I4", "I5", "I6"):
+        batch = sample_batch(task_category=category)
+        response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
+        assert response.status_code == 200, f"{category} should be accepted"
+        link = _data_dir(server_client) / "devices" / DEVICE_ID / "by_category" / category / "2024-03-09" / f"{batch['batch_id']}.json"
+        assert link.exists(), f"{category} by_category index missing"
+
+
+def test_i7_legacy_category_still_accepted(server_client) -> None:
+    """LEGACY: old wrist id I7 is STILL accepted (backward-compat regression).
+
+    New APKs emit I6 for wrist rotation, but old-APK / old on-disk batches carry
+    I7. The ingest contract keeps I7 so those are never quarantined (the
+    2026-07-03 morning incident that dropped 36 legacy batches).
+    """
     batch = sample_batch(task_category="I7")
     response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
     assert response.status_code == 200
@@ -61,12 +77,30 @@ def test_i7_category_index_created(server_client) -> None:
     assert link.exists()
 
 
-def test_c6_category_index_created_for_research_taxonomy(server_client) -> None:
+def test_c6_legacy_category_still_accepted(server_client) -> None:
+    """LEGACY: a retired research-taxonomy id C6 is STILL accepted (compat)."""
     batch = sample_batch(task_category="C6")
     response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
     assert response.status_code == 200
     link = _data_dir(server_client) / "devices" / DEVICE_ID / "by_category" / "C6" / "2024-03-09" / f"{batch['batch_id']}.json"
     assert link.exists()
+
+
+def test_unknown_task_category_rejected(server_client) -> None:
+    """A task id outside the CANONICAL+LEGACY union (e.g. I8) is rejected.
+
+    All other task fields are filled in so the failure isolates the task-category
+    union check (not the "missing task fields" rule).
+    """
+    batch = sample_batch(task_category="I8")
+    batch["task_name"] = "Unknown future task"
+    batch["task_intuitive_description"] = "Unknown"
+    for feature in batch["context_features"]:
+        feature["task_name"] = "Unknown future task"
+        feature["task_intuitive_description"] = "Unknown"
+    response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
+    assert response.status_code == 400
+    assert response.json()["detail"] == "schema_validation_failed"
 
 
 def test_duplicate_batch_is_idempotent_when_payload_matches(server_client) -> None:

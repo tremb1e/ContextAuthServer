@@ -119,3 +119,58 @@ def test_symmetry_channels_are_interchangeable() -> None:
     for axis in ("x", "y", "z"):
         for feat in ("mean", "std", "energy", "domfreq", "band3_8"):
             assert feats[f"acc_{axis}_{feat}"] == feats[f"gyro_{axis}_{feat}"], f"asymmetry at {axis}_{feat}"
+
+
+def _gravity_window(gx: float, gy: float, gz: float, n: int = 200) -> dict:
+    """A 3-channel window whose accelerometer reads a CONSTANT gravity vector.
+
+    ``orient_landscape`` is derived purely from the mean accelerometer vector, so the
+    accel channel is pinned to ``(gx, gy, gz)`` exactly (no noise) to keep the
+    assertion deterministic — for the flat case gx==gy==0 must hold exactly, or the
+    tie-break would be at the mercy of noise. Gyro/mag carry tiny motionless sinusoids
+    only so the frame is a well-formed 3-channel window; they never feed orient_landscape.
+    """
+    period = 10_000_000
+    rows = []
+    for i in range(n):
+        rows.append({"sensor_type": "ACCELEROMETER", "timestamp_elapsed_nanos": i * period,
+                     "x": gx, "y": gy, "z": gz})
+        rows.append({"sensor_type": "GYROSCOPE", "timestamp_elapsed_nanos": i * period,
+                     "x": 0.01 * float(np.sin(i / 5.0)), "y": 0.01 * float(np.cos(i / 5.0)), "z": 0.0})
+        rows.append({"sensor_type": "MAGNETIC_FIELD", "timestamp_elapsed_nanos": i * period,
+                     "x": 30.0 + 0.1 * float(np.sin(i / 8.0)), "y": 0.1 * float(np.cos(i / 8.0)), "z": 5.0})
+    return _ctx(pd.DataFrame(rows))
+
+
+def _landscape(gx: float, gy: float, gz: float) -> float:
+    """``orient_landscape`` for a window whose mean gravity vector is (gx, gy, gz)."""
+    return extract_window_features(_gravity_window(gx, gy, gz), feature_mode="sensor_only")["orient_landscape"]
+
+
+def test_orient_landscape_follows_synthetic_gravity() -> None:
+    """orient_landscape tracks the mean gravity vector (2026-07-03 inversion fix).
+
+    Regression guard for the bug where the old ``|roll|>pi/4`` test flagged upright
+    portrait as landscape==1 and true landscape as ~0.44. The corrected criterion is
+    ``landscape = |mean(acc_x)| > |mean(acc_y)|``:
+
+    * portrait upright   -> gravity on -y             -> 0.0
+    * portrait top-down  -> gravity on +y             -> 0.0
+    * landscape (either rotation sense) -> gravity on +-x -> 1.0
+    * flat on a table    -> gravity on +z, gx==gy==0  -> 0.0 (documented tie -> portrait)
+    """
+    g = 9.81
+    assert _landscape(0.0, -g, 0.0) == 0.0            # portrait, upright
+    assert _landscape(0.0, g, 0.0) == 0.0             # portrait, upside-down
+    assert _landscape(g, 0.0, 0.0) == 1.0             # landscape, one sense
+    assert _landscape(-g, 0.0, 0.0) == 1.0            # landscape, other sense
+    assert _landscape(0.0, 0.0, g) == 0.0             # flat: ambiguous tie -> 0.0
+
+
+def test_orient_landscape_tilt_dominant_axis_wins() -> None:
+    """Under a tilt, the screen axis with the larger gravity projection wins."""
+    g = 9.81
+    # x-projection beats y (device still partly pitched up on z) -> landscape.
+    assert _landscape(g * 0.7, g * 0.2, g * 0.5) == 1.0
+    # y-projection beats x -> portrait.
+    assert _landscape(g * 0.2, g * 0.7, g * 0.5) == 0.0

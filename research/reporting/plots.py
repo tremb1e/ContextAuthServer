@@ -59,7 +59,7 @@ MODEL_LABELS = {
     "m9": "M9 rand-MoE",
     "m10": "M10 hash-MoE",
 }
-_SCENES = ["C0", "C1", "C2", "C3", "C4", "C5", "C6"]
+_SCENES = ["I0", "I1", "I2", "I3", "I4", "I5", "I6"]
 
 
 def save(fig: "plt.Figure", name: str, fig_dir: Path) -> list[Path]:
@@ -532,36 +532,6 @@ def feature_ablation(results_dir: Path, fig_dir: Path) -> list[Path]:
     return save(fig, "feature_ablation", fig_dir)
 
 
-def mapping_ablation(results_dir: Path, fig_dir: Path) -> list[Path]:
-    """Mapping ablation (recommended vs alt_c5_nav) EER bars.
-
-    Reads ``mapping_ablation.csv`` (columns ``mapping,eer``) if the S5 ablation
-    runner produced one; otherwise skips with a message (the 7-expert taxonomy is
-    fixed in this build, so the alternate mapping is an optional S5 artifact).
-
-    Args:
-        results_dir: The results root.
-        fig_dir: The figures output dir.
-
-    Returns:
-        The written figure paths (empty if skipped).
-    """
-    rows = _read_csv(results_dir / "mapping_ablation.csv")
-    if not rows:
-        _skip("mapping_ablation", "mapping_ablation.csv missing (optional ablation)")
-        return []
-    labels = [str(r.get("mapping", i)) for i, r in enumerate(rows)]
-    eers = [_to_float(r.get("eer")) for r in rows]
-    fig, ax = plt.subplots(figsize=(5, 4))
-    x = np.arange(len(labels))
-    ax.bar(x, [0.0 if not np.isfinite(e) else e for e in eers], color="#E45756", alpha=0.85)
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=20, ha="right")
-    ax.set_ylabel(r"$\mathrm{EER}$")
-    ax.grid(axis="y", alpha=0.25)
-    return save(fig, "mapping_ablation", fig_dir)
-
-
 def sensor_channel_ablation(results_dir: Path, fig_dir: Path) -> list[Path]:
     """Sensor-channel ablation (accel/gyro/mag) EER bars.
 
@@ -604,7 +574,6 @@ PLOT_FUNCTIONS: dict[str, Callable[..., list[Path]]] = {
     "package_ablation": package_ablation,
     "privacy_ablation": privacy_ablation,
     "feature_ablation": feature_ablation,
-    "mapping_ablation": mapping_ablation,
     "sensor_channel_ablation": sensor_channel_ablation,
 }
 

@@ -28,13 +28,11 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pandas as pd
 import torch
 import yaml
 
-from research import SCENARIOS, TASK_SCENE_MAPPINGS, canonical_scene_for_task
+from research import SCENARIOS
 from research.config import config_hash, load_config
-from research.datasets.impostors import sample_matched_impostors
 from research.experiments._data import DatasetBundle
 from research.experiments.bootstrap import bootstrap_ci, paired_delta
 from research.experiments.evaluator import EvalResult, evaluate
@@ -316,7 +314,7 @@ def run_experiment(cfg: dict[str, Any], data_dir: str | Path, out_dir: str | Pat
         )
     else:
         _write_csv(run_dir / "expert_utilization.csv", [{"expert": s, "utilization": "", "router_prob_mean": ""} for s in SCENARIOS])
-    # expert_scene_matrix.csv (rows = scene, cols = experts C0..C6)
+    # expert_scene_matrix.csv (rows = scene, cols = experts I0..I6)
     if result.expert_scene_matrix:
         matrix_rows = []
         for s_idx, scene in enumerate(SCENARIOS):
@@ -529,15 +527,14 @@ def _dataset_view(
     feature_mode: str | None = None,
     drop_columns: list[str] | None = None,
     drop_prefixes: list[str] | None = None,
-    relabel_mapping: str | None = None,
     seed: int = 42,
 ) -> Path:
-    """Create a lightweight dataset view for feature/mapping ablations.
+    """Create a lightweight dataset view for feature / sensor-channel ablations.
 
     Feature-family and sensor-channel ablations only need a different
-    ``feature_manifest.json``; the split parquet files are hard-linked. Mapping
-    ablations rewrite weak labels from ``raw_task_category`` / ``task_category``
-    and rebuild scene-matched impostor pairs.
+    ``feature_manifest.json``; the split parquet files are hard-linked. (The old
+    8->7 mapping ablation was removed with the C0..C6 taxonomy — the scene space
+    is now the identity ``I0..I6``, so no alternate mapping exists.)
 
     Args:
         source_dir: Existing dataset directory.
@@ -546,8 +543,8 @@ def _dataset_view(
         feature_mode: Optional feature mode whose columns become active.
         drop_columns: Exact feature columns to drop.
         drop_prefixes: Feature-column prefixes to drop.
-        relabel_mapping: Optional task-scene mapping variant.
-        seed: Deterministic impostor resampling seed.
+        seed: Deterministic impostor resampling seed (unused here; kept for
+            call-site symmetry with the ablation suites).
 
     Returns:
         The view dataset directory.
@@ -589,68 +586,15 @@ def _dataset_view(
         }
     )
 
-    if relabel_mapping is None:
-        for filename in ("train.parquet", "val.parquet", "test.parquet", "impostor_pairs.parquet"):
-            src = source / filename
-            if src.exists():
-                _link_or_copy(src, view / filename)
-    else:
-        if relabel_mapping not in TASK_SCENE_MAPPINGS:
-            raise ValueError(f"unknown relabel mapping: {relabel_mapping!r}")
-        frames: dict[str, pd.DataFrame] = {}
-        for split in ("train", "val", "test"):
-            src = source / f"{split}.parquet"
-            frame = pd.read_parquet(src) if src.exists() else pd.DataFrame()
-            if not frame.empty:
-                frame = _relabel_frame(frame, relabel_mapping)
-            frames[split] = frame
-            frame.to_parquet(view / f"{split}.parquet", index=False)
-        full = pd.concat([f for f in frames.values() if not f.empty], ignore_index=True) if any(not f.empty for f in frames.values()) else pd.DataFrame()
-        if full.empty:
-            pd.DataFrame().to_parquet(view / "impostor_pairs.parquet", index=False)
-        else:
-            test_start = len(frames["train"]) + len(frames["val"])
-            test_idx = list(range(test_start, test_start + len(frames["test"])))
-            pairs = sample_matched_impostors(full, test_idx, list(full.index), seed=seed, n_per_genuine=1)
-            pairs.to_frame().to_parquet(view / "impostor_pairs.parquet", index=False)
-            split_manifest["n_impostor_pairs"] = len(pairs)
-        split_manifest["task_mapping"] = relabel_mapping
+    for filename in ("train.parquet", "val.parquet", "test.parquet", "impostor_pairs.parquet"):
+        src = source / filename
+        if src.exists():
+            _link_or_copy(src, view / filename)
 
-    split_manifest.setdefault("task_mapping", split_manifest.get("task_mapping", "recommended"))
     (view / "split_manifest.json").write_text(
         json.dumps(split_manifest, indent=2, sort_keys=True, default=str), encoding="utf-8"
     )
     return view
-
-
-def _relabel_frame(frame: pd.DataFrame, mapping: str) -> pd.DataFrame:
-    """Rewrite weak-label columns from task labels for mapping ablations.
-
-    Args:
-        frame: Split frame.
-        mapping: Task-scene mapping name.
-
-    Returns:
-        A relabelled copy.
-    """
-    out = frame.copy()
-    raw_col = "raw_task_category" if "raw_task_category" in out.columns else "task_category"
-    scenarios = list(SCENARIOS)
-    for idx, raw in out[raw_col].items():
-        scene = canonical_scene_for_task(None if pd.isna(raw) else str(raw), mapping)
-        if scene is None:
-            continue
-        probs = [0.01 / (len(scenarios) - 1)] * len(scenarios)
-        probs[scenarios.index(scene)] = 0.99
-        topk = [scene] + [s for s in scenarios if s != scene]
-        out.at[idx, "task_category"] = scene
-        out.at[idx, "weak_label_top1"] = scene
-        out.at[idx, "weak_label_topk_json"] = json.dumps(topk, ensure_ascii=False)
-        out.at[idx, "weak_label_probs_json"] = json.dumps(probs, ensure_ascii=False)
-        out.at[idx, "weak_label_confidence"] = 0.99 - (0.01 / (len(scenarios) - 1))
-        out.at[idx, "weak_label_entropy"] = float(-sum(p * np.log(p) for p in probs if p > 0))
-        out.at[idx, "weak_label_low_confidence"] = False
-    return out
 
 
 def run_topk_sweep(cfg: dict[str, Any], data_dir: str | Path, out_dir: str | Path) -> Path:
@@ -876,22 +820,9 @@ def _run_ablation_suites(cfg: dict[str, Any], data_dir: str | Path, out_dir: str
     _write_csv(out / "privacy_ablation.csv", privacy_rows)
     manifest["privacy"] = {"csv": str(out / "privacy_ablation.csv"), "runs": privacy_rows}
 
-    mapping_rows: list[dict[str, Any]] = []
-    for mapping in ("recommended", "alt_c5_nav"):
-        try:
-            view = _dataset_view(data, view_root, f"mapping__{mapping}", relabel_mapping=mapping, seed=seed)
-            run_dir = run_experiment(
-                _formal_m7_cfg(cfg, kstar, {"features": {"mode": str(cfg.get("features", {}).get("mode", "ui_sensor"))}}),
-                view,
-                out,
-                tag=f"ablation_mapping_{mapping}",
-            )
-            mapping_rows.append(_ablation_metric_row("mapping", mapping, run_dir, {"mapping": mapping}))
-        except Exception as exc:  # pragma: no cover
-            mapping_rows.append({"ablation_kind": "mapping", "name": mapping, "mapping": mapping, "error": str(exc)})
-            LOGGER.warning("mapping ablation %s failed: %s", mapping, exc)
-    _write_csv(out / "mapping_ablation.csv", mapping_rows)
-    manifest["mapping"] = {"csv": str(out / "mapping_ablation.csv"), "runs": mapping_rows}
+    # NOTE: the 8->7 task-mapping ablation was removed with the C0..C6 taxonomy.
+    # The scene space is now the identity I0..I6, so there is no alternate mapping
+    # to compare against.
 
     sensor_specs = [
         ("no_accel", "acc_"),

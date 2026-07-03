@@ -1,4 +1,4 @@
-"""Score-based weak labeling for the 7 interaction scenarios (C0..C6).
+"""Score-based weak labeling for the 7 interaction scenarios (I0..I6).
 
 Each scenario gets MULTIPLE additive / subtractive labeling functions (LFs) —
 not a single if/else (``_recon_spec.md`` §4). The per-class raw scores are
@@ -7,26 +7,36 @@ temperature-scaled and softmaxed into a probability vector; ``confidence`` is
 probabilities. A window is *low confidence* when ``max_prob < low_conf_prob`` or
 ``confidence < low_conf_margin``.
 
-Scoring cues per class (mirrors ``_recon_spec.md`` §4) use ONLY non-leakage
-window features produced by :mod:`research.preprocessing.feature_extractors`:
+2026-07-03: the taxonomy moved from the retired ``C0..C6`` paper classes to the
+app's own 7 task classes ``I0..I6``. The rules were re-keyed and split from the
+old C-rules (initial heuristic port — quality calibration is deferred P1 work,
+per ``20-server.md`` §B.2):
 
-* **C0 QUIESCENT**: + low event rate, + stable UI, + low/mid motion, + no large
-  surface; − text_changed, − scroll, − click, − high motion.
-* **C1 KEYBOARD**: + text_changed, + focused editable, + editable nodes, + IME
-  visible; − no editable node.
-* **C2 SCROLLING**: + scroll count, + scrollable nodes, + list/webview/scroll
-  container; − text_changed, − large nav diff.
-* **C3 NAVIGATION**: + click/long_click, + window_state_changed, + large UI-tree
-  diff; − text_changed, − sustained high scroll.
-* **C4 STRUCTURED_CONTROL**: + checkable/switch controls, + form-like controls,
-  + checked/selected changes, + click with small/medium diff; − pure scroll,
-  − pure media/canvas.
-* **C5 MEDIA_PLAYBACK**: + large surface, + UI stable > 8s (proxy), + low event
-  rate, + low/mid motion, + landscape (IMU-derived); − high motion, − text,
-  − high scroll.
-* **C6 CANVAS_HIGH_MOTION**: + large surface, + low UI node count, + high
-  accel/gyro/mag energy, + motion burst, + high touch density, + low semantic
-  event rate; − low motion & stable UI.
+* **I0 STATIC_VIEWING** (quiet watching + video) <- old C0 QUIESCENT evidence,
+  now ALSO absorbing the old C5 media cues: + low event rate, + stable UI,
+  + low motion, + large stable surface at low motion (video), + landscape at low
+  motion; − text/scroll/click, − high motion.
+* **I1 TEXT_ENTRY** <- old C1 (unchanged): + text_changed, + focused editable,
+  + editable nodes, + focus events; − no editable node.
+* **I2 DISCRETE_TOUCH** <- old C3 (discrete navigation) + C4 (structured
+  control) MERGED: + click/long_click, + window_state_changed, + form-like
+  controls, + checked/selected change, + large UI-tree diff; − text_changed,
+  − sustained scroll, − pure media/canvas.
+* **I3 LIST_BROWSING** <- old C2 split #1 (list index evidence): + scroll,
+  + scrollable nodes, + LIST container (``ui_list``), + item click/selection,
+  + flick rhythm; − text_changed, − doc/webview container without a list.
+* **I4 LONG_FORM_REVIEW** <- old C2 split #2 (continuous displacement evidence):
+  + scroll, + DOC/webview container (``ui_webview``), + near-zero clicks,
+  + long dwell, + continuous (non-list) scroll; − list container, − clicks,
+  − text_changed. I3 vs I4 is decided by list-index cues (``ui_list`` + item
+  taps) vs continuous-scroll doc cues (``ui_webview`` + long dwell, ~no clicks).
+* **I5 OBJECT_MANIPULATION** <- old C6 split #1 (drag/annotate): + high touch
+  density, + large canvas/surface, + mid/high motion, + landscape, + low
+  semantic event rate; − pure wrist motion (high motion & ~no touch), − static.
+* **I6 WRIST_ROTATION** <- old C6 split #2 (rotation): + very high accel/gyro
+  energy, + gyro burst, + near-zero touch, + low UI event rate, + low node
+  count; − high touch density, − low motion & stable UI. I5 vs I6 is decided by
+  touch density (I5 high, I6 ~0) and motion extremity (I6 highest).
 
 ``LABEL_FEATURE_KEYS`` is the audited allow-list of feature columns the LFs may
 read — it is asserted disjoint from ``research.LEAKAGE_COLUMNS`` at import time.
@@ -84,9 +94,6 @@ LABEL_FEATURE_KEYS: tuple[str, ...] = (
 # Fail fast if the allow-list ever intersects the leakage set.
 assert not (set(LABEL_FEATURE_KEYS) & LEAKAGE_COLUMNS), "labeling allow-list touches a leakage column"
 
-#: UI-stable milliseconds above which media playback is more indicated.
-_MEDIA_STABLE_MS = 2000.0
-
 
 def softmax(scores: np.ndarray, temperature: float = 1.0) -> np.ndarray:
     """Numerically-stable temperature-scaled softmax.
@@ -120,202 +127,216 @@ def _clip01(value: float) -> float:
     return float(min(1.0, max(0.0, value)))
 
 
-def _score_c0(f: dict[str, float]) -> tuple[float, list[str]]:
-    """Additive/subtractive LFs for C0 QUIESCENT_VIEWING."""
+def _score_i0(f: dict[str, float]) -> tuple[float, list[str]]:
+    """Additive/subtractive LFs for I0 STATIC_VIEWING (quiet watching + video)."""
     score = 0.0
     fired: list[str] = []
     if f["evt_rate"] < 0.6:
         score += 1.0
-        fired.append("C0:low_event_rate")
+        fired.append("I0:low_event_rate")
     if f["ui_stable_ms"] > 1500.0:
         score += 0.8
-        fired.append("C0:stable_ui")
+        fired.append("I0:stable_ui")
     if f["motion_energy_low"] > 0.7:
-        score += 0.8
-        fired.append("C0:low_motion")
-    if f["ui_surface_like"] < 0.5:
-        score += 0.4
-        fired.append("C0:no_large_surface")
+        score += 0.9
+        fired.append("I0:low_motion")
+    # Video signature: a large stable surface with low motion (absorbs the old
+    # C5 media class — reading with NO surface also lands here via the cues above).
+    if f["ui_surface_like"] > 0.5 and f["motion_energy_high"] < 0.1:
+        score += 1.0
+        fired.append("I0:media_surface_lowmotion")
+    if f["orient_landscape"] > 0.5 and f["motion_energy_high"] < 0.1:
+        score += 0.6
+        fired.append("I0:landscape_video")
     if f["evt_textchanged_count"] > 0:
         score -= 1.5
-        fired.append("C0:-text_changed")
+        fired.append("I0:-text_changed")
     if f["evt_scroll_count"] > 0:
-        score -= 1.0
-        fired.append("C0:-scroll")
+        score -= 1.2
+        fired.append("I0:-scroll")
     if f["evt_click_count"] > 0:
         score -= 0.6
-        fired.append("C0:-click")
+        fired.append("I0:-click")
     if f["motion_energy_high"] > 0.2:
-        score -= 1.2
-        fired.append("C0:-high_motion")
-    if f["ui_surface_like"] > 0.5:
-        # A large media/canvas surface is not quiescent reading UI.
         score -= 1.4
-        fired.append("C0:-large_surface")
+        fired.append("I0:-high_motion")
     return score, fired
 
 
-def _score_c1(f: dict[str, float]) -> tuple[float, list[str]]:
-    """Additive/subtractive LFs for C1 KEYBOARD_TEXT_ENTRY."""
+def _score_i1(f: dict[str, float]) -> tuple[float, list[str]]:
+    """Additive/subtractive LFs for I1 TEXT_ENTRY (unchanged from old C1)."""
     score = 0.0
     fired: list[str] = []
     if f["evt_textchanged_count"] > 0:
         score += 1.6
-        fired.append("C1:text_changed")
+        fired.append("I1:text_changed")
     if f["ui_focusable_count"] > 0 and f["ui_editable_count"] > 0:
         score += 1.0
-        fired.append("C1:focused_editable")
+        fired.append("I1:focused_editable")
     if f["ui_editable_count"] > 0:
         score += 0.9
-        fired.append("C1:editable_nodes")
+        fired.append("I1:editable_nodes")
     if f["evt_focus_count"] > 0:
         score += 0.5
-        fired.append("C1:focus_events")
+        fired.append("I1:focus_events")
     if f["ui_editable_count"] <= 0:
         score -= 1.2
-        fired.append("C1:-no_editable")
+        fired.append("I1:-no_editable")
     return score, fired
 
 
-def _score_c2(f: dict[str, float]) -> tuple[float, list[str]]:
-    """Additive/subtractive LFs for C2 CONTINUOUS_SCROLLING."""
-    score = 0.0
-    fired: list[str] = []
-    if f["evt_scroll_count"] > 0:
-        score += 1.5
-        fired.append("C2:scroll_count")
-    if f["ui_scrollable_count"] > 0:
-        score += 0.9
-        fired.append("C2:scrollable_nodes")
-    if f["ui_list"] > 0.5 or f["ui_webview"] > 0.5 or f["ui_scroll_indicator"] > 0.5:
-        score += 0.8
-        fired.append("C2:list_or_scroll_container")
-    if f["evt_scroll_count"] >= 3:
-        score += 0.5
-        fired.append("C2:sustained_scroll")
-    if f["evt_textchanged_count"] > 0:
-        score -= 1.2
-        fired.append("C2:-text_changed")
-    if f["ui_treediff_nodedelta"] > 8.0:
-        score -= 0.6
-        fired.append("C2:-large_nav_diff")
-    return score, fired
-
-
-def _score_c3(f: dict[str, float]) -> tuple[float, list[str]]:
-    """Additive/subtractive LFs for C3 DISCRETE_NAVIGATION."""
+def _score_i2(f: dict[str, float]) -> tuple[float, list[str]]:
+    """Additive/subtractive LFs for I2 DISCRETE_TOUCH (old C3 + C4 merged)."""
     score = 0.0
     fired: list[str] = []
     if f["evt_click_count"] > 0 or f["evt_longclick_count"] > 0:
-        score += 1.3
-        fired.append("C3:click")
+        score += 1.2
+        fired.append("I2:click")
     if f["evt_windowstate_count"] > 0:
-        score += 1.1
-        fired.append("C3:window_state_changed")
-    if f["ui_treediff_nodedelta"] > 4.0 or f["ui_treediff_categoryl1"] > 3.0:
+        score += 0.9
+        fired.append("I2:window_state_changed")
+    if f["ui_form_like_control_count"] > 0:
+        score += 0.9
+        fired.append("I2:form_like_controls")
+    if f["ui_checked_count"] > 0 or f["ui_selected_count"] > 0:
         score += 0.8
-        fired.append("C3:large_tree_diff")
+        fired.append("I2:checked_or_selected")
+    if f["ui_treediff_nodedelta"] > 4.0 or f["ui_treediff_categoryl1"] > 3.0:
+        score += 0.5
+        fired.append("I2:large_tree_diff")
     if f["evt_textchanged_count"] > 0:
         score -= 1.0
-        fired.append("C3:-text_changed")
+        fired.append("I2:-text_changed")
     if f["evt_scroll_count"] >= 3:
-        score -= 1.0
-        fired.append("C3:-sustained_scroll")
-    return score, fired
-
-
-def _score_c4(f: dict[str, float]) -> tuple[float, list[str]]:
-    """Additive/subtractive LFs for C4 STRUCTURED_CONTROL."""
-    score = 0.0
-    fired: list[str] = []
-    if f["ui_form_like_control_count"] > 0:
-        score += 1.2
-        fired.append("C4:form_like_controls")
-    if f["ui_checked_count"] > 0 or f["ui_selected_count"] > 0:
-        score += 1.0
-        fired.append("C4:checked_or_selected")
-    if f["evt_click_count"] > 0 and f["ui_editable_count"] >= 1:
-        score += 0.8
-        fired.append("C4:click_with_controls")
-    if f["evt_click_count"] > 0 and 0.0 < f["ui_treediff_nodedelta"] <= 4.0:
-        score += 0.5
-        fired.append("C4:small_diff_after_click")
-    if f["evt_scroll_count"] >= 3:
-        score -= 1.0
-        fired.append("C4:-pure_scroll")
+        score -= 1.2
+        fired.append("I2:-sustained_scroll")
     if f["ui_surface_like"] > 0.5 and f["ui_node_count_mean"] < 6.0:
         score -= 1.0
-        fired.append("C4:-pure_media_or_canvas")
+        fired.append("I2:-pure_media_or_canvas")
     return score, fired
 
 
-def _score_c5(f: dict[str, float]) -> tuple[float, list[str]]:
-    """Additive/subtractive LFs for C5 MEDIA_PLAYBACK."""
+def _score_i3(f: dict[str, float]) -> tuple[float, list[str]]:
+    """Additive/subtractive LFs for I3 LIST_BROWSING (old C2 split: list scroll)."""
     score = 0.0
     fired: list[str] = []
-    if f["ui_surface_like"] > 0.5:
-        score += 1.4
-        fired.append("C5:large_surface")
-    # Media signature: a large surface over a small node tree with low motion
-    # (distinguishes video playback from quiescent reading, which has a bigger
-    # node tree and no surface).
-    if f["ui_surface_like"] > 0.5 and f["ui_node_count_mean"] < 10.0 and f["motion_energy_high"] < 0.1:
+    if f["evt_scroll_count"] > 0:
         score += 1.3
-        fired.append("C5:media_surface_lowmotion")
-    if f["ui_stable_ms"] > _MEDIA_STABLE_MS:
-        score += 0.7
-        fired.append("C5:ui_stable")
-    if f["evt_rate"] < 0.5:
+        fired.append("I3:scroll")
+    if f["ui_scrollable_count"] > 0:
         score += 0.6
-        fired.append("C5:low_event_rate")
-    if f["motion_energy_high"] < 0.1:
+        fired.append("I3:scrollable_nodes")
+    # LIST container is the key cue that separates I3 from the I4 doc/webview.
+    if f["ui_list"] > 0.5:
+        score += 1.2
+        fired.append("I3:list_container")
+    if f["evt_click_count"] > 0 or f["ui_selected_count"] > 0:
         score += 0.6
-        fired.append("C5:low_motion")
-    if f["orient_landscape"] > 0.5:
-        score += 0.9
-        fired.append("C5:landscape")
-    if f["motion_energy_high"] > 0.3 or f["gyro_burst_count"] > 5:
-        score -= 1.6
-        fired.append("C5:-high_motion")
+        fired.append("I3:item_select")
+    if f["evt_scroll_count"] >= 2:
+        score += 0.3
+        fired.append("I3:flick_rhythm")
     if f["evt_textchanged_count"] > 0:
         score -= 1.0
-        fired.append("C5:-text_changed")
-    if f["evt_scroll_count"] >= 3:
-        score -= 1.0
-        fired.append("C5:-high_scroll")
+        fired.append("I3:-text_changed")
+    if f["ui_webview"] > 0.5 and f["ui_list"] < 0.5:
+        score -= 0.8
+        fired.append("I3:-doc_container")
     return score, fired
 
 
-def _score_c6(f: dict[str, float]) -> tuple[float, list[str]]:
-    """Additive/subtractive LFs for C6 CANVAS_HIGH_MOTION."""
+def _score_i4(f: dict[str, float]) -> tuple[float, list[str]]:
+    """Additive/subtractive LFs for I4 LONG_FORM_REVIEW (old C2 split: doc scroll)."""
     score = 0.0
     fired: list[str] = []
-    if f["ui_surface_like"] > 0.5:
-        score += 0.8
-        fired.append("C6:large_surface")
-    if f["ui_node_count_mean"] < 8.0:
+    if f["evt_scroll_count"] > 0:
+        score += 1.1
+        fired.append("I4:scroll")
+    # DOC/webview container is the key cue that separates I4 from the I3 list.
+    if f["ui_webview"] > 0.5:
+        score += 1.2
+        fired.append("I4:doc_container")
+    if f["evt_click_count"] <= 0:
+        score += 0.7
+        fired.append("I4:near_zero_click")
+    if f["ui_stable_ms"] > 2000.0:
         score += 0.5
-        fired.append("C6:low_node_count")
+        fired.append("I4:long_dwell")
+    if f["ui_list"] < 0.5 and f["ui_scrollable_count"] > 0:
+        score += 0.4
+        fired.append("I4:continuous_scroll_not_list")
+    if f["ui_list"] > 0.5:
+        score -= 1.0
+        fired.append("I4:-list_container")
+    if f["evt_click_count"] > 0:
+        score -= 0.5
+        fired.append("I4:-clicks")
+    if f["evt_textchanged_count"] > 0:
+        score -= 1.0
+        fired.append("I4:-text_changed")
+    return score, fired
+
+
+def _score_i5(f: dict[str, float]) -> tuple[float, list[str]]:
+    """Additive/subtractive LFs for I5 OBJECT_MANIPULATION (old C6 split: drag)."""
+    score = 0.0
+    fired: list[str] = []
+    if f["touch_rate"] > 1.0:
+        score += 1.2
+        fired.append("I5:high_touch_density")
+    if f["ui_surface_like"] > 0.5:
+        score += 0.9
+        fired.append("I5:large_canvas")
+    if f["motion_energy_mid"] > 0.3 or f["motion_energy_high"] > 0.2:
+        score += 0.7
+        fired.append("I5:mid_high_motion")
+    if f["orient_landscape"] > 0.5:
+        score += 0.4
+        fired.append("I5:landscape")
+    if f["evt_rate"] < 0.8:
+        score += 0.3
+        fired.append("I5:low_semantic_event_rate")
+    # Pure high-energy rotation with ~no touch is wrist motion (I6), not dragging.
+    if f["motion_energy_high"] > 0.6 and f["touch_rate"] < 0.5:
+        score -= 1.4
+        fired.append("I5:-pure_wrist_motion")
+    if f["motion_energy_low"] > 0.7 and f["ui_stable_ms"] > 2000.0:
+        score -= 1.2
+        fired.append("I5:-static")
+    return score, fired
+
+
+def _score_i6(f: dict[str, float]) -> tuple[float, list[str]]:
+    """Additive/subtractive LFs for I6 WRIST_ROTATION (old C6 split: rotation)."""
+    score = 0.0
+    fired: list[str] = []
     if f["motion_energy_high"] > 0.3:
         score += 1.6
-        fired.append("C6:high_motion_energy")
+        fired.append("I6:high_motion_energy")
     if f["gyro_burst_count"] > 5 or f["gyro_mag_mean"] > 0.5:
-        score += 1.0
-        fired.append("C6:motion_burst")
-    if f["touch_rate"] > 1.0:
-        score += 0.6
-        fired.append("C6:high_touch_density")
+        score += 1.1
+        fired.append("I6:gyro_burst")
+    # Near-zero touch is the key cue that separates I6 from the I5 canvas drag.
+    if f["touch_rate"] < 0.5:
+        score += 0.8
+        fired.append("I6:near_zero_touch")
     if f["evt_rate"] < 0.6:
         score += 0.4
-        fired.append("C6:low_semantic_event_rate")
+        fired.append("I6:low_ui_event_rate")
+    if f["ui_node_count_mean"] < 8.0:
+        score += 0.3
+        fired.append("I6:low_node_count")
+    if f["touch_rate"] > 1.0:
+        score -= 1.2
+        fired.append("I6:-high_touch")
     if f["motion_energy_low"] > 0.7 and f["ui_stable_ms"] > 2000.0:
         score -= 1.4
-        fired.append("C6:-low_motion_stable_ui")
+        fired.append("I6:-low_motion_stable_ui")
     return score, fired
 
 
 #: Ordered scoring functions, one per scenario (index aligns with SCENARIOS).
-_SCORERS = (_score_c0, _score_c1, _score_c2, _score_c3, _score_c4, _score_c5, _score_c6)
+_SCORERS = (_score_i0, _score_i1, _score_i2, _score_i3, _score_i4, _score_i5, _score_i6)
 
 
 def _prepare_features(features: dict[str, float]) -> dict[str, float]:

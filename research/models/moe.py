@@ -1,6 +1,6 @@
 """MoEAuthenticator — 7-expert mixture with top-k sparse gating (contract §4).
 
-Seven MLP-encoder experts (one per scenario C0..C6) each map the window feature
+Seven MLP-encoder experts (one per scenario I0..I6) each map the window feature
 vector to an embedding. A router (:mod:`research.models.routing`) produces expert
 logits; **top-k sparse gating** keeps the ``top_k`` highest-weight experts,
 renormalises their softmax weights to sum to 1, and zeroes the rest. The fused

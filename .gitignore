@@ -25,6 +25,8 @@ data/paper/
 data/synthetic/
 data/processed/
 data/datasets/
+data/processed-*/
+data/datasets-*/
 data/results/
 logs/
 backups/

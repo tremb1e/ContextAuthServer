@@ -155,7 +155,7 @@ def per_scene_eer(
     Args:
         labels: Binary labels (1 == genuine) aligned with ``scores``.
         scores: Match scores.
-        scenes: The matched scene id (C0..C6) for each pair, aligned.
+        scenes: The matched scene id (I0..I6) for each pair, aligned.
 
     Returns:
         Mapping ``scene -> eer`` (finite entries only).

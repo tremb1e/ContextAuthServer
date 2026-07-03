@@ -203,7 +203,7 @@ class DatasetBundle:
 
 
 def scene_to_index(scene: str) -> int:
-    """Map a scenario id (C0..C6) to its ordinal index (unknown -> 0).
+    """Map a scenario id (I0..I6) to its ordinal index (unknown -> 0).
 
     Args:
         scene: A scenario id string.

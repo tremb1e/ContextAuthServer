@@ -1,5 +1,12 @@
 # research/ Engineering Recon Spec (derived from exp_prompt.md §六–§二十)
 
+> **[2026-07-03 taxonomy-evolution note]** The scenario/task taxonomy has since evolved
+> to the canonical **7 classes `I0..I6`** (the former `C0..C6` scene ids, the 8->7
+> task-mapping, and the `recommended` vs `alt_c5_nav` dual-mapping mechanism were all
+> removed; old `I7` wrist -> new `I6`, and the old spatial-capture `I6` was deleted).
+> **The body below is unchanged and reflects the contract as written at the time.** For
+> the current state see `docs/ContextAuthServer_服务端说明.md` and `research/README.md`.
+
 > READ-ONLY recon. Ground-truth: 7 scenarios = 7 experts (C0..C6), top-k swept 1..7 (NOT fixed 3),
 > learned weakly-supervised router, `encryption:"none"` (LZ4+SHA256+TLS), device_id-only, ingest-only
 > server (no ML yet), 9-dim IMU base like HMOG. All ML built new under `ContextAuthServer/research/`.

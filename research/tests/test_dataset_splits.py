@@ -62,8 +62,8 @@ def test_matched_impostors_cross_user_and_scene(dataset_dir: Path) -> None:
     pairs = pd.read_parquet(dataset_dir / "impostor_pairs.parquet")
     assert len(pairs) > 0, "expected matched impostor pairs"
     assert (pairs["genuine_user_id"].astype(str) != pairs["impostor_user_id"].astype(str)).all()
-    # Scene is one of C0..C6.
-    assert pairs["scene"].astype(str).str.match(r"^C[0-6]$").all()
+    # Scene is one of I0..I6.
+    assert pairs["scene"].astype(str).str.match(r"^I[0-6]$").all()
 
 
 def test_other_protocols_build_and_pass_leakage(windows_parquet: Path, tmp_path: Path) -> None:

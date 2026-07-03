@@ -7,7 +7,7 @@ writes (or a synthetic generator that writes the *same* tree), turns it into win
 features + weak labels, trains a **Mixture-of-Experts (MoE) authenticator** against
 several baselines, and produces publication figures + a report.
 
-Ground truth of the design (frozen): **7 interaction scenarios `C0..C6` == 7 experts**,
+Ground truth of the design (frozen): **7 interaction scenarios `I0..I6` == 7 experts**,
 **top-k swept over `1..7`** (not a fixed 3), a **learned weakly-supervised router**,
 `encryption:"none"` (TLS confidentiality + SHA-256 integrity over the LZ4-compressed
 bytes), `device_id`-only identity. Authoritative contracts: `research/_BUILD_CONTRACT.md`
@@ -118,8 +118,7 @@ runner substitutes with the frozen `k*` (from `topk_kstar.json`) at suite-build 
 `ablation_topk.yaml` (top_k `1..7`), `ablation_privacy.yaml`
 (`privacy_coarse_bounds` / `no_resource_id` / `coarse_widget_category_only`),
 `ablation_features.yaml` (`no_ui` / `no_sensor` / `no_package` / `no_tree_diff` /
-`no_temporal_smoothness` / `no_load_balance`), `ablation_mapping.yaml`
-(`recommended` vs `alt_c5_nav`), `ablation_sensor_channel.yaml`
+`no_temporal_smoothness` / `no_load_balance`), `ablation_sensor_channel.yaml`
 (`no_accel` / `no_gyro` / `no_magnetometer`).
 
 ---
@@ -235,9 +234,10 @@ each is a *representative* minimal implementation, not a placeholder:
    rather than redrawing true ROC curves (documented in `reporting/plots.py`).
 
 8. **Automatic ablation drivers.** `run_all_experiments` now writes
-   `feature_ablation.csv`, `privacy_ablation.csv`, `mapping_ablation.csv`, and
-   `sensor_channel_ablation.csv` by default. `--skip-ablations` is only for quick
-   debugging; paper runs should keep the default.
+   `feature_ablation.csv`, `privacy_ablation.csv`, and `sensor_channel_ablation.csv`
+   by default. `--skip-ablations` is only for quick debugging; paper runs should keep
+   the default. (The former 8->7 mapping ablation was dropped: the scene set is now the
+   identity `I0..I6`, so there is no alternative task mapping left to compare.)
 
 9. **`k=7` == dense-all.** In the top-k sweep, `k = n_experts = 7` aggregates every
    expert (the dense-all mixture), the intended interpretation from the spec.
@@ -254,5 +254,6 @@ each is a *representative* minimal implementation, not a placeholder:
   metrics/bootstrap), [`_recon_contract.md`](./_recon_contract.md) (exact app↔server data
   contract).
 - **中文文档:** [`docs/ContextAuthServer_服务端说明.md`](../docs/ContextAuthServer_服务端说明.md)
-  records the ingest contract, I0..I7 -> C0..C6 task mapping, strict no-text
-  server checks, automatic ablation outputs, and reproducible commands.
+  records the ingest contract (CANONICAL `I0..I6` + legacy `I7`/`C0..C6` compatibility)
+  and its legacy task-remapping rules, strict no-text server checks, automatic ablation
+  outputs, and reproducible commands.

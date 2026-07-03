@@ -1,5 +1,13 @@
 # research/ FROZEN BUILD CONTRACT (authoritative — implementation agents follow VERBATIM)
 
+> **[2026-07-03 taxonomy-evolution note]** This contract was frozen under the earlier
+> `C0..C6` taxonomy. The scenario/task taxonomy has since evolved to the canonical
+> **7 classes `I0..I6`** (the 8->7 task-mapping and the `recommended` vs `alt_c5_nav`
+> dual-mapping mechanism were removed; old `I7` wrist -> new `I6`, old spatial-capture
+> `I6` deleted). **The body below is unchanged and reflects the contract as written at
+> the time.** For the current state see `docs/ContextAuthServer_服务端说明.md` and
+> `research/README.md`.
+
 Companion docs (authoritative for requirements/contract/methodology; READ them):
 `_recon_spec.md` (exp_prompt §六–§二十 digest), `_recon_contract.md` (exact app↔server data contract), `_recon_hmog.md` (HMOG methodology idioms to mirror, with copy-able code).
 
