@@ -163,3 +163,49 @@ python tools/send_sample_batch.py --server http://127.0.0.1:8000 --task-category
 ```
 
 > 背景：2026-07-03 一次采集出现 71 成功 / 36 隔离（`HTTP 400 schema_validation_failed`）。根因是**线上镜像陈旧**、把 App 的受控任务金标签批次全部拒绝；`THIRD_PARTY_APP`（`task_category=null`）批次不受影响。已通过重建 + 重部署修复并端到端验证。这也是契约保留 `LEGACY_TASK_CATEGORIES` 的直接动因。完整分析见 [`docs/0703/`](./0703/) 目录下当日快照分析文档。
+
+## 8. 2026-07-04 迭代：App v1.1.x 与 research 层根因修复
+
+本节记录 2026-07-04 一轮 App 端迭代与 research 弱标注 / 特征层根因修复。**摄取契约、envelope 8 字段、`Batch` schema、隐私边界均未变，服务端无需改动。**
+
+### 8.1 App 端修复（v1.1.0 → v1.1.1）
+
+- **IMU 采集线程修复（v1.1.0，已落盘验证）**：旧实现传感器回调在主线程处理、高负载下丢样，0703 快照实测有效采样率回退至 ~86 Hz/通道。改为 `HandlerThread` 独立采集线程后，**2026-07-04 在盘数据（`deploy/data/paper`，94 批，`app_version=1.1.0`）实测 accel/gyro 103.3 Hz、mag 100.0 Hz**，恢复名义速率（本机 python 逐批复算确认）。
+- **App v1.1.1（app 团队报告，服务端无需改动、字段名与 schema 不变）**，三项修复：
+  1. **详细页实测 Hz 口径统一（`SensorRateMath`）**：详情页展示的实时 Hz 计算口径修正，与落盘统计口径一致。
+  2. **`totalSamples` 清零**：会话样本计数器跨批不再累加残值，按批正确归零。
+  3. **`ServerClock` 全链墙钟统一**：批墙钟出现异常负 / 超长间隔（实测 91 s / 93 s / −6.05 s 等）的根因是链路各处墙钟来源不一致；统一为单一 `ServerClock` 后 `batch_duration_seconds` 不再虚增。字段名与 schema 不变，服务端解析无需调整。
+
+### 8.2 research 层根因修复合集（本轮，全部落地）
+
+| 编号 | 修复 | 要点 |
+|---|---|---|
+| P0-1 | `ui_surface_like` / `ui_bounds_occupancy` 量纲错配 | 旧 `_bounds_area` 除以 1080×1920 像素，而 `bounds_grid` 为像素÷24 网格（有效量级 ~173×158），真机上二特征恒 0。改为**尺度无关**的每快照屏幕外接框归一 `rel_area`，清洗哨兵值（±89478485）/非正尺寸；`ui_surface_like` 候选集限定 surface/texture/video/canvas 类名以避开满屏根容器退化。真机 I0 的 `ui_surface_like>0` 占比 0.00→0.68。 |
+| P0-2 | 合成器 bounds 量纲 | `generate_synthetic_data` 由像素改为 ÷24 网格尺度，与真机对齐（RNG 抽取流不变，确定性保持）。 |
+| P0-3 / P2-c | 数据集 manifest 可观测性 | `split_manifest` 增 `n_users` / `has_impostor_pairs` / `impostor_pool_check_vacuous` / `warnings`（**置于 `leakage_check` 之外**，保 `all(leakage_check)` 断言）+ `logger.warning`；`leave_day_out` 单日回退 `leave_session_out` 由 `SplitResult.notes` 标记为 `leave_day_out_fell_back_to_leave_session_out`。破解单用户 / 空 impostor 时 `all([])==True` 的静默真空。 |
+| P1-a | I6 缺席线索门控 | `near_zero_touch(+0.8)` / `low_event(+0.4)` 门控在正向运动证据之后——静看窗不再被误判 I6。 |
+| P1-b | I3/I4 滚动权重对齐 + 容器线索修正 | I3 滚动存在权重 1.3→1.1 对齐 I4；`ScrollView` 由 list 改判 webview 文档容器（连续滚动而非条目列表）、`GridView` 并入 list。`from_index` / `item_count` 实测恒 −1（Compose 不上报指数滚动），故不造指数特征，仅权重对齐 + 局限声明。 |
+| P1-c | I5 画布线索门控 | `large_canvas`（`ui_surface_like>0.5`）门控在触控证据（`touch_rate>0.5`）之后——大 surface 无触控是视频（I0）而非画布拖拽（I5）。真机 32 个 I5 金标 0 个带 surface 节点、25 个 I0 金标 17 个带（其中 14 个 touch≤0.5），未门控会把 I0 视频漏进 I5。 |
+| P2-a | 泄漏列补全 | `LEAKAGE_COLUMNS` 增 `media_like_score` / `list_like_score` / `form_like_score`。 |
+| P2-b | 常量化 | 硬编码 `7` → `N_SCENARIOS`（trainer）/ `SCENARIOS`（tables / plots / smoke test）。 |
+
+### 8.3 弱标注质量（2026-07-04 金标 169 窗）
+
+弱标 top1 与金标一致率 **46.15% → 56.21%**（+10.06pp）；低置信 23.9% → 17.4%。逐类：I1 0.953、I6 0.882、I5 0.688（保持不回退）、**I4 0.000→1.000**（ScrollView 归类修正）；I0 / I2 / I3 仍为 0.000。
+
+**I0 / I2 / I3 残留为采集端信号缺失的固有局限（非弱标注可调，留待采集侧解决）**：
+
+1. 所有金标批 `TYPE_VIEW_CLICKED` 计数为 0（Compose 应用不发点击无障碍事件）→ 杀 I2 点击线索与 I3 选项线索；
+2. 视频播放连发 `TYPE_WINDOW_CONTENT_CHANGED`（I0 金标 `evt_rate` 均值 ≈ 11）→ 破 I0 低事件线索；
+3. Compose `LazyColumn` 从不呈现为 `RecyclerView`（I3 `ui_list` 恒 0），I4 `near_zero_click` 普发 → 无容器的 I3 滚动被 I4 吸收。
+
+### 8.4 测试与产物
+
+- `research/tests`：**72 passed**（`conda run -n hmog_1dcnn`）。server `app/` 层 `tests/`：**56 passed**（`base` 环境）。fastapi 仅在 base、torch 仅在 hmog_1dcnn，无单一环境同跑两套——既有环境漂移，非本轮引入。
+- 修复态产物：`data/processed-0704-postfix`、`data/datasets-0704-postfix`（三协议，`leakage_all_true=true`，单用户 → manifest `warnings` 已出现）。**修复前基线 `data/processed-0704`（46.15%）保留未覆盖。**
+- 复跑：`run_preprocess --input deploy/data/paper --output data/processed-0704-postfix --window-size-sec 5 --stride-sec 1`；`build_datasets --input data/processed-0704-postfix --output data/datasets-0704-postfix --protocol {leave_session_out|leave_day_out|leave_app_out}`。
+- `data/results/report.md` 为**合成 run 生成物**，非本轮真实数据产物；如需真实数字须按 §5 命令重跑再生，勿手改。
+
+### 8.5 最新数据态
+
+多用户可行性与实验需求满足度的最新评估见 `docs/0704/数据可行性与实验需求满足度分析-2026-07-04.md`（取代 0703 快照）。单用户 / 单日限制仍未突破（见 §6）。

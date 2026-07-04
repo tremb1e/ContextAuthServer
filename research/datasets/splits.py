@@ -51,6 +51,10 @@ class SplitResult:
         group_cols: The id columns the protocol grouped by (for the manifest
             leakage checks; e.g. ``["session_id"]`` or ``["day_id",
             "package_bucket"]``).
+        notes: Human-readable diagnostic flags about how the split was formed
+            (e.g. a degenerate-data fallback). Surfaced verbatim into the dataset
+            ``split_manifest.json`` ``warnings`` list so a silent fallback is
+            observable downstream.
     """
 
     protocol: str
@@ -58,6 +62,7 @@ class SplitResult:
     val_idx: list[int]
     test_idx: list[int]
     group_cols: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
     def sizes(self) -> dict[str, int]:
         """Return the number of rows in each split.
@@ -231,8 +236,12 @@ def leave_day_out(
     assignment: dict[str, str]
     if n <= 1:
         # Only one day available: fall back to a session split so val/test are
-        # still non-empty and no session leaks (documented degenerate case).
-        return leave_session_out(windows, seed=seed, val_frac=val_frac, test_frac=test_frac)
+        # still non-empty and no session leaks (documented degenerate case). Flag
+        # the fallback so the manifest can record that the day axis was NOT held
+        # out (otherwise a single-day dataset silently looks leave_day_out-valid).
+        fallback = leave_session_out(windows, seed=seed, val_frac=val_frac, test_frac=test_frac)
+        fallback.notes.append("leave_day_out_fell_back_to_leave_session_out")
+        return fallback
     if n == 2:
         assignment = {unique_days[0]: "train", unique_days[1]: "test"}
         # Borrow the last train day's *sessions*? No — keep val empty-safe by

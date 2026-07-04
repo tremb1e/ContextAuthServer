@@ -28,8 +28,9 @@ keyed by exactly those columns (the anti-drift rule of ``_BUILD_CONTRACT.md``
 A MISSING channel sets ``{ch}_missing = 1.0`` and fills every one of that
 channel's feature cells with ``0.0`` (never a silent zero — the flag is set).
 
-NONE of the leakage columns (``estimated_context_category``, ``game_like_score``,
-``viewIdResourceName``, ``coarse_orientation``) is ever read or emitted.
+NONE of the leakage columns (``research.LEAKAGE_COLUMNS`` — the task-label /
+app-fingerprint set incl. ``estimated_context_category``, the ``*_like_score``
+family and ``coarse_orientation``) is ever read or emitted.
 """
 
 from __future__ import annotations
@@ -553,16 +554,21 @@ def _class_category(class_name: str | None) -> str:
 
     Returns:
         A short category string (``edit/list/switch/button/surface/webview/
-        text/other``).
+        text/other``). ``list`` == item-list containers (RecyclerView / ListView
+        / GridView, the I3 list-browsing cue); ``webview`` == doc / continuous-
+        scroll containers (WebView / ScrollView / NestedScrollView, the I4 long-
+        form cue). 2026-07-04 P1-b fix: ScrollView was previously bucketed as
+        ``list``, which set ``ui_list`` on I4 long-form windows and pulled them
+        into I3 — a ScrollView is a continuous document scroll, not an item list.
     """
     name = (class_name or "").lower()
     if "edit" in name:
         return "edit"
-    if "recycler" in name or "listview" in name or "scrollview" in name:
+    if "recycler" in name or "listview" in name or "gridview" in name:
         return "list"
     if "switch" in name or "checkbox" in name or "radio" in name or "seekbar" in name or "spinner" in name:
         return "switch"
-    if "webview" in name:
+    if "webview" in name or "scrollview" in name:
         return "webview"
     if "surface" in name or "texture" in name:
         return "surface"
@@ -619,21 +625,105 @@ def _structural_hash(nodes: list[dict[str, Any]]) -> int:
     return int(digest[:8], 16)
 
 
-def _bounds_area(node: dict[str, Any]) -> float:
-    """Normalized area of a node's bounds grid (fraction of a 1080x1920 screen).
+#: On-device the AccessibilityNodeInfo bounds are stored as ``bounds_grid`` ==
+#: pixel coords // 24 (a coarse grid). An "unset"/off-window bound is packed as
+#: ~``2**31 // 24`` (≈ 89,478,485); treat ``|coord| >= _BOUNDS_SENTINEL`` as that
+#: sentinel and drop the node from area math.
+_BOUNDS_SENTINEL = 89_478_485
+
+#: Class-name substrings of a large MEDIA / CANVAS *surface* (VideoView,
+#: SurfaceView, TextureView, GLSurfaceView, a drawing Canvas). ONLY these classes
+#: count toward ``ui_surface_like``. A plain full-screen *container*
+#: (FrameLayout / DecorView / ContentFrameLayout) must NOT trigger it: real UIs
+#: always nest one or more full-screen containers, so an area-only "any node
+#: covers >½ the screen" test reads 1 for every snapshot (2026-07-04 fix — see
+#: :func:`_screen_extent`).
+_SURFACE_LIKE_TOKENS = ("surface", "texture", "video", "canvas")
+
+
+def _node_bounds(node: dict[str, Any]) -> tuple[int, int, int, int] | None:
+    """Return validated ``(left, top, right, bottom)`` grid bounds, or ``None``.
+
+    Drops nodes whose ``bounds_grid`` is missing, non-integer, an off-window
+    sentinel (``|coord| >= _BOUNDS_SENTINEL``) or degenerate (non-positive
+    width/height).
 
     Args:
         node: A node dict.
 
     Returns:
-        Area fraction in ``[0, ~1]`` (0.0 if bounds missing/degenerate).
+        The cleaned ``(left, top, right, bottom)`` tuple, or ``None``.
     """
     bounds = node.get("bounds_grid")
     if not isinstance(bounds, dict):
+        return None
+    try:
+        left = int(bounds.get("left", 0))
+        top = int(bounds.get("top", 0))
+        right = int(bounds.get("right", 0))
+        bottom = int(bounds.get("bottom", 0))
+    except (TypeError, ValueError):
+        return None
+    if any(abs(v) >= _BOUNDS_SENTINEL for v in (left, top, right, bottom)):
+        return None
+    if right - left <= 0 or bottom - top <= 0:
+        return None
+    return left, top, right, bottom
+
+
+def _screen_extent(nodes: list[dict[str, Any]]) -> float:
+    """Scale-free screen-area proxy: the bbox area over all valid node bounds.
+
+    Derived from the snapshot's own nodes (not a hardcoded device resolution) so
+    it is correct for BOTH pixel-level bounds and the on-device ``pixels // 24``
+    grid. This replaces the old fixed ``/(1080*1920)`` divisor, under which every
+    real-device node area was ~0.01 and ``ui_surface_like`` / ``ui_bounds_
+    occupancy`` were a constant 0 (2026-07-04 unit-mismatch fix).
+
+    Args:
+        nodes: A snapshot's node list.
+
+    Returns:
+        The extent area in grid-units², or ``0.0`` if no valid bounds exist.
+    """
+    boxes = [b for b in (_node_bounds(n) for n in nodes) if b is not None]
+    if not boxes:
         return 0.0
-    width = max(0, int(bounds.get("right", 0)) - int(bounds.get("left", 0)))
-    height = max(0, int(bounds.get("bottom", 0)) - int(bounds.get("top", 0)))
-    return float(width * height) / float(1080 * 1920)
+    width = max(b[2] for b in boxes) - min(b[0] for b in boxes)
+    height = max(b[3] for b in boxes) - min(b[1] for b in boxes)
+    return float(width * height) if width > 0 and height > 0 else 0.0
+
+
+def _rel_area(node: dict[str, Any], extent: float) -> float:
+    """Node bounds area as a fraction ``[0, 1]`` of the snapshot screen extent.
+
+    Args:
+        node: A node dict.
+        extent: The snapshot extent from :func:`_screen_extent`.
+
+    Returns:
+        Area fraction clamped to ``[0, 1]`` (0.0 if extent or bounds degenerate).
+    """
+    if extent <= 0:
+        return 0.0
+    box = _node_bounds(node)
+    if box is None:
+        return 0.0
+    left, top, right, bottom = box
+    return min(1.0, float((right - left) * (bottom - top)) / extent)
+
+
+def _is_surface_like(node: dict[str, Any]) -> bool:
+    """True iff the node's class is a media/canvas surface (not a mere container).
+
+    Args:
+        node: A node dict.
+
+    Returns:
+        Whether the class name matches a :data:`_SURFACE_LIKE_TOKENS` substring.
+    """
+    name = (node.get("class_name") or "").lower()
+    return any(token in name for token in _SURFACE_LIKE_TOKENS)
 
 
 def _extract_ui(
@@ -688,9 +778,17 @@ def _extract_ui(
     out["ui_form_like_control_count"] = float(
         categories.get("switch", 0) + categories.get("edit", 0)
     )
-    # Surface-like: any node covering a large fraction of the screen.
-    out["ui_surface_like"] = 1.0 if any(_bounds_area(n) > 0.5 for n in last) else 0.0
-    out["ui_bounds_occupancy"] = float(min(1.0, sum(_bounds_area(n) for n in last)))
+    # Surface-like: a large MEDIA/CANVAS surface (VideoView/SurfaceView/...) that
+    # covers >half the on-screen extent. Restricted to surface classes so the
+    # always-present full-screen root container does not make this a constant 1.
+    extent_last = _screen_extent(last)
+    out["ui_surface_like"] = (
+        1.0 if any(_is_surface_like(n) and _rel_area(n, extent_last) > 0.5 for n in last) else 0.0
+    )
+    # Occupancy: total node area as a fraction of the screen extent (same rel_area
+    # basis), summed then clipped to [0, 1] — the original semantics, now scale-
+    # correct. Dense real UIs (many nested containers) saturate near 1.
+    out["ui_bounds_occupancy"] = float(min(1.0, sum(_rel_area(n, extent_last) for n in last)))
 
     # UI stability: window time minus a penalty per window-content change event.
     n_changes = sum(1 for e in events if e.get("event_type") in {"TYPE_WINDOW_CONTENT_CHANGED", "TYPE_WINDOW_STATE_CHANGED"})
@@ -705,8 +803,8 @@ def _extract_ui(
         cats_ref = _node_category_histogram(ref)
         keys = set(cats_last) | set(cats_ref)
         out["ui_treediff_categoryl1"] = float(sum(abs(cats_last.get(k, 0) - cats_ref.get(k, 0)) for k in keys))
-        occ_last = sum(_bounds_area(n) for n in last)
-        occ_ref = sum(_bounds_area(n) for n in ref)
+        occ_last = sum(_rel_area(n, extent_last) for n in last)
+        occ_ref = sum(_rel_area(n, _screen_extent(ref)) for n in ref)
         out["ui_treediff_boundsl1"] = float(abs(occ_last - occ_ref))
         out["ui_treediff_hashchanged"] = 1.0 if _structural_hash(last) != _structural_hash(ref) else 0.0
     return out

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from research import N_SCENARIOS
 from research.config import load_config
 from research.experiments.runner import _resolve_experiment_cfg
 from research.experiments.runner import run_experiment
@@ -64,6 +65,6 @@ def test_train_m7_weak_moe_smoke(dataset_dir: Path, tmp_path: Path) -> None:
     assert metrics["model_kind"] == "moe"
     assert metrics["router"] == "learned"
     assert metrics["top_k"] == 2
-    # MoE runs carry routing diagnostics (7 experts).
-    assert len(metrics.get("expert_utilization", [])) == 7
-    assert len(metrics.get("router_probs_mean", [])) == 7
+    # MoE runs carry routing diagnostics (one per scenario/expert).
+    assert len(metrics.get("expert_utilization", [])) == N_SCENARIOS
+    assert len(metrics.get("router_probs_mean", [])) == N_SCENARIOS

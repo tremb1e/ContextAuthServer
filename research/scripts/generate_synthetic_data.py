@@ -46,6 +46,15 @@ from research.utils.seed import stable_int_seed
 # --- Constants --------------------------------------------------------------
 
 SAMPLING_RATE_HZ = 100
+#: On-device ``bounds_grid`` stores pixel coords // 24 (a coarse grid). The
+#: generator emits node bounds at this same grid scale so synthetic data matches
+#: real-device units. (2026-07-04: the old pixel-level bounds like ``{0,0,1080,
+#: 1920}`` were a different magnitude than real ``//24`` bounds and masked the
+#: ``ui_surface_like`` / ``ui_bounds_occupancy`` unit-mismatch bug — see
+#: ``feature_extractors._screen_extent``.)
+BOUNDS_GRID_DIVISOR = 24
+SCREEN_W_GRID = 1080 // BOUNDS_GRID_DIVISOR  # 45 grid cells wide
+SCREEN_H_GRID = 1920 // BOUNDS_GRID_DIVISOR  # 80 grid cells tall
 CONSENT_VERSION = "1"
 RULE_VERSION = "1"
 RULE_HASH_ZEROS = "0" * 64  # baseline rule hash (64 zeros), per _recon_contract.
@@ -340,18 +349,24 @@ def _build_nodes(rng: np.random.Generator, profile: ScenarioProfile) -> list[dic
         clickable = bool(profile.clickable and rng.random() < 0.4)
         checkable = bool(profile.checkable and rng.random() < 0.4)
         checked = bool(checkable and rng.random() < 0.5)
-        # A large surface-like region for media/canvas scenarios.
+        # A large surface-like region for media/canvas scenarios, emitted full
+        # screen at grid scale (matches the on-device bounds_grid // 24 units).
         if profile.surface_like and depth == 0:
-            bounds = {"left": 0, "top": 0, "right": 1080, "bottom": 1920}
+            bounds = {"left": 0, "top": 0, "right": SCREEN_W_GRID, "bottom": SCREEN_H_GRID}
             class_name = "android.view.SurfaceView"
         else:
-            left = int(rng.integers(0, 400))
-            top = int(rng.integers(0, 800))
+            # Draw in pixels (unchanged rng stream) then convert to the //24 grid
+            # so bounds share the real-device magnitude. Widths >=80px / heights
+            # >=40px always map to >=1 grid cell, so no node collapses to zero area.
+            left_px = int(rng.integers(0, 400))
+            top_px = int(rng.integers(0, 800))
+            right_px = left_px + int(rng.integers(80, 680))
+            bottom_px = top_px + int(rng.integers(40, 240))
             bounds = {
-                "left": left,
-                "top": top,
-                "right": left + int(rng.integers(80, 680)),
-                "bottom": top + int(rng.integers(40, 240)),
+                "left": left_px // BOUNDS_GRID_DIVISOR,
+                "top": top_px // BOUNDS_GRID_DIVISOR,
+                "right": right_px // BOUNDS_GRID_DIVISOR,
+                "bottom": bottom_px // BOUNDS_GRID_DIVISOR,
             }
             class_name = _class_name_for(editable, scrollable, checkable, clickable)
             # Long-form review scrolls a document/webview, not a list — emit the

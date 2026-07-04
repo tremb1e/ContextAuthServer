@@ -1,6 +1,8 @@
 # MoE 自动路由（门控/上下文分类器）与专家模型训练方案
 
 > **[2026-07-03 体系演进批注]** 本文按撰写当时的任务/金标体系描述（旧 8 类 `I0..I7` 与 `C0..C6` 论文分类及其 8→7 映射/消融）。项目已于 2026-07-03 统一为 App 原生 **7 类 `I0..I6`**（1:1 恒等，无 8→7 映射；`recommended`/`alt_c5_nav` 双映射与 mapping 消融均已删除）：删除旧 I6「空间采集 / 扫描取景与拍摄」；旧 I7「手腕转动」→ 新 `I6`；`C0..C6` 金标/场景/专家地位废除（仅作 legacy 兼容标识）。**下方正文保持原样、未随体系更新**；当前态以 [`docs/ContextAuthServer_服务端说明.md`](../../docs/ContextAuthServer_服务端说明.md) 为准。
+>
+> **【2026-07-04 时效补注】** 任务体系现状仍为正典 7 类 `I0..I6`（上述指针不变）；另补两条 0704 演进：① IMU 有效采样率 旧 ~103 Hz → 0703 ~86 Hz（主线程回调丢样）→ App v1.1.0 `HandlerThread` 修复 → 0704 在盘实测 accel/gyro 103.3 Hz、mag 100.0 Hz；② `ui_surface_like≡0` 的特征抽取量纲根因（旧 `_bounds_area` 按 `1080×1920` px 归一、与 `bounds_grid`÷24 粗网格量级错配，相对面积被压到 ≈0）已于 2026-07-04 修复（P0-1，改尺度无关归一）。现状以 [`docs/ContextAuthServer_服务端说明.md`](../../docs/ContextAuthServer_服务端说明.md) §8 与 `docs/0704/` 文档为准。
 
 > 文档编号：03 ｜ 主题：ContextAuthLab 持续认证系统中 **MoE 的 gating/router（上下文分类器）** 的完整落地方案
 > 适用项目：ContextAuthLab（安卓无障碍采 UI 上下文 → 端侧脱敏 → LZ4 压缩上传 → server 按「app 包名 + 脱敏 UI 信息」MoE 自动路由 → 8 专家持续认证）

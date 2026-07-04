@@ -1,5 +1,7 @@
 # 基础事实材料 B —— 数据侧权威分析（只读，供文档撰写引用）
 
+> **[2026-07-04 历史快照批注]** 本文件基于 `data/testdata/2026-06-11` 旧采集，反映**旧 8 类 `C0..C7` 任务体系、`app_version=1.0.0`、~103 Hz** 的当时状态。任务体系此后演进为正典 **7 类 `I0..I6`**（旧 `I7`→新 `I6`、旧空间采集 `I6` 删除，`C0..C7` / `C0..C6` 均废除为 legacy 兼容标识）；有效采样率其后经 0703 回退（~86 Hz，主线程丢样）→ v1.1.0 `HandlerThread` 修复后回升（0704 在盘实测 accel/gyro 103.3 Hz、mag 100.0 Hz）。**下方正文为历史快照、未改。** 现状以 `docs/ContextAuthServer_服务端说明.md`（§2.1–§2.3、§8）为准。
+
 > 本文件由 data-analyst 子代理产出并经主控独立 python 复算交叉核对，覆盖 `data/testdata/2026-06-11` 下全部 59 个解压批次载荷 + 59 个 `.meta.json` 信封。所有统计扫描全部 59 文件。*Confirmed*=直接实测；*Inference*=解释/推断。
 >
 > ⚠️ **构建前提（必读）**：`data/testdata/2026-06-11` 由**旧的保留文本构建**采集（彼时 `text` 对只读节点原样输出、content-desc 走 `<TEXT_REDACTED>` 折叠、并有云端可更新脱敏规则）。**当前构建已切换为 drop-all-text**：所有显示/输入文本一律端侧丢弃，`text`/`text_redacted`/`content_desc_redacted`/`window_title_redacted` 恒 `null`，节点改用布尔 `has_text`/`has_content_description` 存在标志；旧的 `replaced_*`/`redacted_plain_text`/`dynamic_*` 计数键与 `/api/v1/rules`/`RuleUpdateClient`/`RedactionPolicy` 均已移除，`redaction_summary` 现仅含 `dropped_*` 丢弃计数。**因此本文中所有关于 `text`/`text_redacted`/`content_desc_redacted` 的实测数字（10,651 / 38.5% / 594 / 保留 UGC 样例等）均为旧构建历史实测，不代表当前行为。** 对应的"`text` 漏 UGC"隐私风险在当前构建下已由 drop-all-text 解决（见 §D、§H）。

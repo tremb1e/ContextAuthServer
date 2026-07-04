@@ -1,5 +1,7 @@
 # ContextAuth Data Contract (Reconnaissance)
 
+> **[2026-07-03/07-04 taxonomy-evolution note]** This contract was extracted under the earlier `C0..C6` paper taxonomy. The task/scene taxonomy has since evolved to the canonical **7 classes `I0..I6`**: the ingest contract now validates against `TASK_CATEGORIES = CANONICAL{I0..I6} ∪ LEGACY{I7, C0..C6}` — a backward-compatible union that never rejects old APKs / on-disk data; old `I7` wrist → new `I6`, and the old spatial-capture `I6` (Scan/frame/capture) was deleted. **The body below is unchanged and reflects the contract as written at the time.** For the current state see `docs/ContextAuthServer_服务端说明.md` (§2.1–§2.3, §8) and `research/README.md`.
+
 Authoritative on-wire / on-disk contract extracted **verbatim** from real source. Research loaders MUST parse exactly these snake_case keys.
 
 Source of truth:
@@ -102,6 +104,8 @@ Emitted by `JsonCodec.batchToJson`; validated by `schemas.Batch` (`extra="allow"
 
 `TASK_CATEGORIES = {C0,C1,C2,C3,C4,C5,C6}` (both files). Ordinals: C0=0 … C6=6.
 EN labels: C0 Quiescent viewing/Hold and read; C1 Keyboard text entry/Paragraph copy; C2 Continuous scrolling/Feed browsing; C3 Discrete navigation/Menu navigation; C4 Multi-control operation/Simulated phone settings; C5 Media playback/Local video playback; C6 Canvas high motion/Wrist rotation.
+
+> **[现状勘注 2026-07-04]** 上面两行是历史（`C0..C6`）契约原文。当前正典为 **7 类 `I0..I6`**，`app/schemas.py` 以 `TASK_CATEGORIES = CANONICAL_TASK_CATEGORIES{I0..I6} ∪ LEGACY_TASK_CATEGORIES{I7, C0..C6}` 并集校验；旧 `I7` 手腕转动 → 新 `I6`，旧空间采集 `I6`（Scan/frame/capture）已删除，`C0..C6` 仅作 legacy 兼容标识保留。逐条映射与 EN 正典文案见 `docs/ContextAuthServer_服务端说明.md` §2.1–§2.3。
 
 ---
 

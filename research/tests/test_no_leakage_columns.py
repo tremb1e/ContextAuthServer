@@ -1,8 +1,8 @@
 """No leakage columns anywhere in the ML feature path — §15.1.10.
 
-Asserts the 4 leakage columns (``estimated_context_category``,
-``game_like_score``, ``viewIdResourceName``, ``coarse_orientation``) never appear
-in:
+Asserts the leakage columns (``estimated_context_category``, ``game_like_score``,
+``media_like_score``, ``list_like_score``, ``form_like_score``,
+``viewIdResourceName``, ``coarse_orientation``) never appear in:
 
 * the feature-column vocabulary of ANY feature mode (and each mode's manifest is
   marked ``leakage_free``);
@@ -35,10 +35,14 @@ _ALL_MODES = (
     "privacy_coarse_ui",
 )
 
-# Exact set the contract requires excluded (build contract §2).
+# Exact set the contract requires excluded (build contract §2; 2026-07-04 P2-a
+# added the game_like_score siblings media/list/form_like_score).
 _EXPECTED_LEAKAGE = {
     "estimated_context_category",
     "game_like_score",
+    "media_like_score",
+    "list_like_score",
+    "form_like_score",
     "viewIdResourceName",
     "coarse_orientation",
 }

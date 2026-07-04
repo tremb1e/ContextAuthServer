@@ -20,6 +20,8 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
+from research import SCENARIOS
+
 import matplotlib
 
 matplotlib.use("Agg")
@@ -59,7 +61,7 @@ MODEL_LABELS = {
     "m9": "M9 rand-MoE",
     "m10": "M10 hash-MoE",
 }
-_SCENES = ["I0", "I1", "I2", "I3", "I4", "I5", "I6"]
+_SCENES = list(SCENARIOS)
 
 
 def save(fig: "plt.Figure", name: str, fig_dir: Path) -> list[Path]:

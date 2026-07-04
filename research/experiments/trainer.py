@@ -19,6 +19,7 @@ import numpy as np
 import torch
 from torch import Tensor, nn
 
+from research import N_SCENARIOS
 from research.experiments._data import DatasetBundle, SplitTensors
 from research.models.dense import DenseAuthenticator
 from research.models.moe import MoEAuthenticator
@@ -73,7 +74,7 @@ def build_model(cfg: dict[str, Any], bundle: DatasetBundle) -> nn.Module:
             router = "learned"
         return MoEAuthenticator(
             input_dim=input_dim,
-            n_experts=int(model_cfg.get("n_experts", 7)),
+            n_experts=int(model_cfg.get("n_experts", N_SCENARIOS)),
             top_k=int(model_cfg.get("top_k", 2)),
             expert_hidden=expert_hidden,
             embedding_dim=embedding_dim,

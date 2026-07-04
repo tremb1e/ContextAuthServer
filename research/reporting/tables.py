@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from research import SCENARIOS
+
 # Baseline display order + short labels (kept ASCII for LaTeX friendliness).
 _MODEL_ORDER = ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"]
 _MODEL_LABELS = {
@@ -28,7 +30,7 @@ _MODEL_LABELS = {
     "m9": "M9 rand-MoE",
     "m10": "M10 hash-MoE",
 }
-_SCENES = ["I0", "I1", "I2", "I3", "I4", "I5", "I6"]
+_SCENES = list(SCENARIOS)
 
 
 def _fmt(value: Any, precision: int = 4) -> str:

@@ -207,6 +207,12 @@ each is a *representative* minimal implementation, not a placeholder:
    frequency features use **numpy `rfft`** (three band-energy ratios + dom-freq +
    spectral centroid/entropy) rather than a full periodogram. `input_dim` for
    `ui_sensor` is 204 (manifest-driven).
+   *(2026-07-04 P0-1 unit fix: the bounds-grid occupancy / `ui_surface_like` scalars are
+   now **scale-invariant**. The old `_bounds_area` normalised by 1080×1920 **pixels**
+   while `bounds_grid` is pixels **÷24** (effective ~173×158), which pinned
+   `ui_bounds_occupancy`/`ui_surface_like` to ≈0 on real devices; the denominator is now
+   the per-snapshot valid-bounds bounding box, unit-agnostic. See
+   `docs/ContextAuthServer_服务端说明.md` §8.2.)*
 
 3. **Smoke-scale training.** Default `epochs=2`, small nets, small batches — chosen so
    the whole suite runs quickly on CPU. This is enough to exercise every code path and

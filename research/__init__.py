@@ -42,9 +42,15 @@ N_SCENARIOS = 7
 #: them in raw batches (they exist in real data); the pipeline just excludes
 #: them. The IMU-derived landscape boolean is named ``orient_landscape`` and is
 #: ALLOWED (it is our own signal, not a task-bound uploaded label).
+#: ``media_like_score`` / ``list_like_score`` / ``form_like_score`` are the
+#: task-correlated app-uploaded siblings of ``game_like_score`` (they hint at the
+#: interaction class) and are excluded on the same grounds (2026-07-04 P2-a).
 LEAKAGE_COLUMNS = {
     "estimated_context_category",
     "game_like_score",
+    "media_like_score",
+    "list_like_score",
+    "form_like_score",
     "viewIdResourceName",
     "coarse_orientation",
 }

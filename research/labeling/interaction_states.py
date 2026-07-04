@@ -220,8 +220,11 @@ def _score_i3(f: dict[str, float]) -> tuple[float, list[str]]:
     """Additive/subtractive LFs for I3 LIST_BROWSING (old C2 split: list scroll)."""
     score = 0.0
     fired: list[str] = []
+    # Scroll EXISTENCE is a shared I3/I4 cue: weight it identically to I4 (1.1) so
+    # a scrolling window is not pulled to I3 by default (2026-07-04 P1-b — was
+    # 1.3; the I3-vs-I4 split is left to the discriminative container cues below).
     if f["evt_scroll_count"] > 0:
-        score += 1.3
+        score += 1.1
         fired.append("I3:scroll")
     if f["ui_scrollable_count"] > 0:
         score += 0.6
@@ -281,10 +284,17 @@ def _score_i5(f: dict[str, float]) -> tuple[float, list[str]]:
     """Additive/subtractive LFs for I5 OBJECT_MANIPULATION (old C6 split: drag)."""
     score = 0.0
     fired: list[str] = []
+    # I5 (annotate / drag ON a surface) is defined by TOUCH. A large surface with
+    # ~no touch is video playback (I0), not canvas manipulation, so the large-
+    # canvas cue only counts as I5 evidence alongside touch evidence (2026-07-04
+    # P1-c: gated like P1-a gated I6's absence cues — on real gold data 0/32 I5
+    # windows carry a surface node while 14/25 quiet I0 video windows do, so an
+    # ungated surface cue leaks I0 -> I5). Boundary mirrors I6:near_zero_touch.
+    touch_evidence = f["touch_rate"] > 0.5
     if f["touch_rate"] > 1.0:
         score += 1.2
         fired.append("I5:high_touch_density")
-    if f["ui_surface_like"] > 0.5:
+    if touch_evidence and f["ui_surface_like"] > 0.5:
         score += 0.9
         fired.append("I5:large_canvas")
     if f["motion_energy_mid"] > 0.3 or f["motion_energy_high"] > 0.2:
@@ -310,17 +320,29 @@ def _score_i6(f: dict[str, float]) -> tuple[float, list[str]]:
     """Additive/subtractive LFs for I6 WRIST_ROTATION (old C6 split: rotation)."""
     score = 0.0
     fired: list[str] = []
+    # Wrist rotation is defined by MOTION. The "absence" cues below (near-zero
+    # touch / low UI-event rate) are satisfied by a quiet STATIC-viewing (I0)
+    # window too, so they only count as rotation evidence once positive motion
+    # evidence is present (2026-07-04 P1-a: gate them behind motion so I6 stops
+    # over-absorbing I0 — a quiet UI alone is not wrist-turn evidence).
+    motion_evidence = (
+        f["motion_energy_high"] > 0.2
+        or f["motion_energy_mid"] > 0.3
+        or f["gyro_burst_count"] > 5
+        or f["gyro_mag_mean"] > 0.5
+    )
     if f["motion_energy_high"] > 0.3:
         score += 1.6
         fired.append("I6:high_motion_energy")
     if f["gyro_burst_count"] > 5 or f["gyro_mag_mean"] > 0.5:
         score += 1.1
         fired.append("I6:gyro_burst")
-    # Near-zero touch is the key cue that separates I6 from the I5 canvas drag.
-    if f["touch_rate"] < 0.5:
+    # Near-zero touch is the key cue that separates I6 from the I5 canvas drag —
+    # but only counts alongside motion evidence (gated, see above).
+    if motion_evidence and f["touch_rate"] < 0.5:
         score += 0.8
         fired.append("I6:near_zero_touch")
-    if f["evt_rate"] < 0.6:
+    if motion_evidence and f["evt_rate"] < 0.6:
         score += 0.4
         fired.append("I6:low_ui_event_rate")
     if f["ui_node_count_mean"] < 8.0:

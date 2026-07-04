@@ -43,6 +43,9 @@ from research.preprocessing.feature_extractors import (
     build_feature_columns,
     build_feature_manifest,
 )
+from research.utils.logging import get_logger
+
+LOGGER = get_logger("research.datasets.builders")
 
 # Non-feature columns preserved in every split parquet (build contract §3a).
 _ID_COLUMNS = [
@@ -284,6 +287,27 @@ def build_dataset(
         json.dumps(feature_manifest, indent=2, sort_keys=True), encoding="utf-8"
     )
 
+    # Observability for degenerate (single-user / single-day) builds. The build
+    # must still SUCCEED (the smoke pipeline depends on it) but must not look
+    # validated when it is not: expose n_users, whether any impostor pairs exist,
+    # whether the impostor-pool leakage check was vacuously True (all([]) is True
+    # when there are 0 pairs), and any split fallback notes — as explicit warnings.
+    users = sorted(set(df[USER_COL].astype(str)))
+    n_users = len(users)
+    has_impostor_pairs = len(impostors) > 0
+    impostor_pool_check_vacuous = not has_impostor_pairs
+    warnings: list[str] = list(split.notes)
+    if n_users < 2:
+        warnings.append("single_user_dataset")
+    if not has_impostor_pairs:
+        warnings.append(
+            "no_impostor_pairs_single_user_dataset"
+            if n_users < 2
+            else "no_impostor_pairs_no_cross_user_scene_match"
+        )
+    for warning in warnings:
+        LOGGER.warning("dataset %s: %s", dataset_name, warning)
+
     # Split manifest (§3d) — assert every leakage check True.
     manifest: dict[str, Any] = {
         "protocol": protocol,
@@ -292,7 +316,11 @@ def build_dataset(
         "dataset_name": dataset_name,
         "seed": int(seed),
         "input_dim": feature_manifest["input_dim"],
-        "users": sorted(set(df[USER_COL].astype(str))),
+        "users": users,
+        "n_users": n_users,
+        "has_impostor_pairs": bool(has_impostor_pairs),
+        "impostor_pool_check_vacuous": bool(impostor_pool_check_vacuous),
+        "warnings": warnings,
         "devices": sorted(set(df["device_id"].astype(str))) if "device_id" in df else [],
         "sessions": sorted(set(df[SESSION_COL].astype(str))),
         "days": sorted(set(df[DAY_COL].astype(str))),

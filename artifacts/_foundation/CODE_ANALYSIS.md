@@ -1,5 +1,7 @@
 # 基础事实材料 A —— 代码侧权威分析（只读，供文档撰写引用）
 
+> **[2026-07-04 历史快照批注]** 本文件基于 2026-06-11 期 `android-app` 源码，反映**旧 8 类 `C0..C7` 任务体系、`app_version=1.0.0`、~103 Hz** 的当时状态。任务体系此后演进为正典 **7 类 `I0..I6`**（旧 `I7`→新 `I6`、旧空间采集 `I6` 删除，`C0..C7` / `C0..C6` 均废除为 legacy 兼容标识）；有效采样率其后经 0703 回退（~86 Hz，主线程丢样）→ v1.1.0 `HandlerThread` 修复后回升（0704 在盘实测 accel/gyro 103.3 Hz、mag 100.0 Hz）。其中 `media_like_score` 恒 0 / `ui_surface_like` 抽取缺陷已在 research 层 P0-1 修复（见现状文档 §8）。**下方正文为历史快照、未改。** 现状以 `docs/ContextAuthServer_服务端说明.md`（§2.1–§2.3、§8）为准。
+
 > 本文件由 code-analyst 子代理产出，覆盖 `android-app/src/main` 全量源码、清单/`res/xml` 配置、关键单测、服务端 `server/app/*`、`server/.../default_rules.json`，以及仓库自带设计文档。引用格式 `path:line`，推断标注 `(inferred)`。撰写正式文档时以本文件 + DATA_ANALYSIS.md 为权威依据。
 
 ---

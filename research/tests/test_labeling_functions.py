@@ -69,6 +69,79 @@ def test_mixed_scroll_window_topk_contains_list_and_longform() -> None:
     assert "I4" in out["topk"], f"expected the long-form sibling to stay in top-k, got {out['topk']}"
 
 
+def test_i6_absence_cues_are_gated_behind_motion() -> None:
+    """A quiet, low-touch window with NO motion must NOT be labeled I6 (P1-a).
+
+    I6's near-zero-touch / low-event cues are 'absence' signals a static-viewing
+    window also satisfies. Without motion evidence they must not fire, so this
+    motionless window (which WOULD score I6 top1 under the old ungated rules)
+    no longer does.
+    """
+    quiet_no_motion = {
+        "touch_rate": 0.0,
+        "evt_rate": 0.5,
+        "ui_node_count_mean": 3,
+        "motion_energy_low": 0.3,
+        "motion_energy_mid": 0.0,
+        "motion_energy_high": 0.0,
+        "gyro_burst_count": 0,
+        "gyro_mag_mean": 0.0,
+        "ui_stable_ms": 1000,
+    }
+    out = weak_label(quiet_no_motion)
+    assert out["top1"] != "I6", f"quiet motionless window scored I6: {out['topk']}"
+    assert "I6:near_zero_touch" not in out["fired_rules"]
+    assert "I6:low_ui_event_rate" not in out["fired_rules"]
+
+
+def test_i6_still_wins_with_real_motion() -> None:
+    """With genuine rotation energy the gated cues fire and I6 is still top1."""
+    wrist = {
+        "touch_rate": 0.0, "evt_rate": 0.3, "ui_node_count_mean": 4,
+        "motion_energy_high": 0.9, "gyro_burst_count": 10, "gyro_mag_mean": 1.0,
+        "motion_energy_low": 0.0,
+    }
+    out = weak_label(wrist)
+    assert out["top1"] == "I6"
+    assert "I6:near_zero_touch" in out["fired_rules"]
+
+
+def test_i5_canvas_cue_is_gated_behind_touch() -> None:
+    """A large surface with ~no touch is video (I0), not a canvas drag (P1-c).
+
+    I5's large-canvas cue is an object-manipulation signal that a quiet video
+    window also satisfies (it shows a media surface). Without touch evidence the
+    cue must not fire, so this no-touch / light-motion surface window is labeled
+    static-viewing, not I5 manipulation.
+    """
+    video_no_touch = {
+        "touch_rate": 0.2,          # below the 0.5 touch-evidence gate
+        "ui_surface_like": 1.0,     # a large media surface (would fire ungated)
+        "motion_energy_low": 0.9,   # light motion — device essentially still
+        "motion_energy_mid": 0.1,
+        "motion_energy_high": 0.0,
+        "orient_landscape": 1.0,
+        "evt_rate": 0.3,
+        "ui_stable_ms": 3000,
+        "ui_node_count_mean": 6,
+    }
+    out = weak_label(video_no_touch)
+    assert out["top1"] == "I0", f"no-touch surface window scored {out['topk']}"
+    assert "I5:large_canvas" not in out["fired_rules"]
+
+
+def test_i5_still_wins_with_touch_drag() -> None:
+    """With genuine touch the canvas cue fires and I5 is still top1."""
+    drag = {
+        "touch_rate": 4.0, "ui_surface_like": 1.0, "motion_energy_mid": 0.6,
+        "motion_energy_high": 0.1, "orient_landscape": 1.0, "evt_rate": 0.3,
+        "ui_node_count_mean": 6,
+    }
+    out = weak_label(drag)
+    assert out["top1"] == "I5"
+    assert "I5:large_canvas" in out["fired_rules"]
+
+
 def test_leakage_columns_are_never_read() -> None:
     """Injecting huge values into the 4 leakage columns does not change the output."""
     base = {"evt_scroll_count": 6, "ui_scrollable_count": 3, "ui_list": 1.0, "evt_rate": 4.0, "touch_rate": 1.0, "ui_node_count_mean": 25}
