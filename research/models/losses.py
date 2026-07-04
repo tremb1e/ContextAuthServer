@@ -135,7 +135,12 @@ def auth_loss(
     raise ValueError(f"unknown auth_loss kind: {kind!r}")
 
 
-def kl_weak(router_logprobs: Tensor, weak_probs: Tensor, confidence: Tensor) -> Tensor:
+def kl_weak(
+    router_logprobs: Tensor,
+    weak_probs: Tensor,
+    confidence: Tensor,
+    conf_threshold: float = 0.0,
+) -> Tensor:
     """Confidence-weighted KL(weak-label ‖ router) supervision.
 
     Args:
@@ -145,6 +150,10 @@ def kl_weak(router_logprobs: Tensor, weak_probs: Tensor, confidence: Tensor) -> 
         confidence: ``[B]`` per-window weak-label confidence in ``[0, 1]``; each
             sample's KL is scaled by its confidence so low-confidence windows are
             (softly) skipped as the spec requires.
+        conf_threshold: Hard gate for the §9.5 confidence-threshold ablation —
+            windows whose confidence is below this value contribute zero KL weight
+            (their identity/``L_auth`` role is untouched). ``0.0`` (the default) is
+            a no-op and is bit-for-bit identical to the ungated behaviour.
 
     Returns:
         A scalar loss (confidence-weighted mean of per-sample KL divergence).
@@ -155,6 +164,8 @@ def kl_weak(router_logprobs: Tensor, weak_probs: Tensor, confidence: Tensor) -> 
     # KL(target || router) = sum target * (log target - logq), per sample.
     per_sample = (target * (target.log() - router_logprobs)).sum(dim=-1)
     weight = confidence.clamp(0.0, 1.0)
+    if conf_threshold > 0.0:
+        weight = weight * (weight >= conf_threshold).to(weight.dtype)
     denom = weight.sum().clamp_min(_EPS)
     return (per_sample * weight).sum() / denom
 
@@ -181,17 +192,18 @@ def load_balance(router_probs: Tensor) -> Tensor:
 
 
 def temporal_smoothness(router_probs: Tensor, session_ids: Tensor) -> Tensor:
-    """Penalise router-distribution jumps between windows of the same session.
+    """Penalise router jumps between same-session ADJACENT ROWS of the batch.
 
-    For every pair of *adjacent* rows in the batch that share a session id, adds
-    the squared L2 distance between their router distributions. Adjacent windows
-    (which overlap heavily) should route to similar experts.
+    Legacy contract-signature term (kept for backward compatibility): for every
+    pair of *adjacent rows* in the tensor that share a session id, adds the
+    squared L2 distance between their router distributions. This only captures
+    true temporal adjacency when the rows of a session are already contiguous and
+    time-ordered (e.g. the whole-split validation forward). For shuffled training
+    batches use :func:`temporal_smoothness_pairs` with explicit successor indices.
 
     Args:
         router_probs: ``[B, n_experts]`` dense router probabilities.
-        session_ids: ``[B]`` integer session ids aligned with ``router_probs``
-            (windows of one session should be contiguous / grouped for this to
-            capture temporal adjacency; grouping is arbitrary but consistent).
+        session_ids: ``[B]`` integer session ids aligned with ``router_probs``.
 
     Returns:
         A scalar loss (zero when no adjacent same-session pair exists).
@@ -208,14 +220,51 @@ def temporal_smoothness(router_probs: Tensor, session_ids: Tensor) -> Tensor:
     return (sq * mask).sum() / denom
 
 
+def temporal_smoothness_pairs(router_probs: Tensor, succ_positions: Tensor) -> Tensor:
+    """Penalise router jumps only between TRUE time-adjacent window pairs (SRV-7).
+
+    Unlike :func:`temporal_smoothness` (which relies on batch row adjacency), this
+    penalises exactly the ``(j, succ_positions[j])`` pairs the caller declares as
+    real temporal neighbours, so it is correct under shuffled training batches.
+
+    Args:
+        router_probs: ``[B, n_experts]`` dense router probabilities for a forward
+            pass whose rows include each penalised window AND its time successor.
+        succ_positions: ``[B]`` long; ``succ_positions[j]`` is the row index within
+            this same tensor of ``j``'s time-successor window, or ``-1`` when ``j``
+            has no in-tensor successor. Only pairs with ``succ >= 0`` are penalised.
+
+    Returns:
+        Mean squared L2 distance over the valid adjacent pairs (a differentiable
+        zero when there is none).
+    """
+    if router_probs.shape[0] == 0:
+        return _zero_like(router_probs)
+    succ = succ_positions.to(device=router_probs.device, dtype=torch.long)
+    valid = succ >= 0
+    if not bool(valid.any()):
+        return _zero_like(router_probs)
+    src_idx = torch.nonzero(valid, as_tuple=False).flatten()
+    dst_idx = succ[src_idx]
+    diff = router_probs.index_select(0, src_idx) - router_probs.index_select(0, dst_idx)
+    return (diff**2).sum(dim=-1).mean()
+
+
 def total_loss(outputs: dict[str, Tensor], batch: dict[str, Tensor], cfg: dict[str, Any]) -> tuple[Tensor, dict[str, float]]:
     """Combine the loss terms per the config weights.
 
     Expected ``batch`` keys: ``user_labels`` ``[B]``; optional ``weak_probs``
-    ``[B,7]``, ``confidence`` ``[B]``, ``session_ids`` ``[B]``. Expected
-    ``outputs`` keys: ``embedding``, ``user_logits`` and — for MoE — ``router_logits``
-    / ``router_probs``. The ``cfg["loss"]`` block supplies ``lambda_scene``,
-    ``lambda_balance``, ``lambda_smooth`` and ``auth_kind``.
+    ``[B,7]``, ``confidence`` ``[B]``, ``session_ids`` ``[B]``. For the SRV-7
+    successor-pair smoothness the caller may additionally pass ``succ_positions``
+    (``[F]`` successor row indices into the forward tensor) and ``main_count``
+    (the number of leading rows that are the batch's OWN windows — the auth/KL/
+    balance terms score only those, while any trailing rows are appended purely to
+    supply a temporal successor). ``main_count`` defaults to the full tensor, so a
+    caller passing none of these keys behaves exactly as before. Expected
+    ``outputs`` keys: ``embedding``, ``user_logits`` and — for MoE —
+    ``router_logits`` / ``router_probs``. The ``cfg["loss"]`` block supplies
+    ``lambda_scene``, ``lambda_balance``, ``lambda_smooth``, ``auth_kind`` and
+    ``weak_conf_threshold``.
 
     Args:
         outputs: A model forward output dict.
@@ -231,13 +280,19 @@ def total_loss(outputs: dict[str, Tensor], batch: dict[str, Tensor], cfg: dict[s
     lambda_balance = float(loss_cfg.get("lambda_balance", 0.005))
     lambda_smooth = float(loss_cfg.get("lambda_smooth", 0.1))
     auth_kind = str(loss_cfg.get("auth_kind", "ce_proto"))
+    weak_conf_threshold = float(loss_cfg.get("weak_conf_threshold", 0.0))
 
     embeddings = outputs["embedding"]
+    # Auth/KL/balance score only the leading ``main_count`` rows (the batch's own
+    # windows); trailing rows appended for the successor-pair smoothness (SRV-7)
+    # are excluded here. Defaults to the full tensor (no-op for legacy callers).
+    main_count = int(batch.get("main_count", embeddings.shape[0]))
     user_labels = batch["user_labels"]
+    user_logits = outputs.get("user_logits")
     l_auth = auth_loss(
-        embeddings,
+        embeddings[:main_count],
         user_labels,
-        user_logits=outputs.get("user_logits"),
+        user_logits=(user_logits[:main_count] if user_logits is not None else None),
         kind=auth_kind,
     )
 
@@ -251,22 +306,33 @@ def total_loss(outputs: dict[str, Tensor], batch: dict[str, Tensor], cfg: dict[s
     if router_logits is not None and "weak_probs" in batch and lambda_scene > 0:
         confidence = batch.get("confidence")
         if confidence is None:
-            confidence = torch.ones(embeddings.shape[0], device=embeddings.device)
-        l_kl = kl_weak(F.log_softmax(router_logits, dim=-1), batch["weak_probs"], confidence)
+            confidence = torch.ones(main_count, device=embeddings.device)
+        l_kl = kl_weak(
+            F.log_softmax(router_logits[:main_count], dim=-1),
+            batch["weak_probs"],
+            confidence,
+            conf_threshold=weak_conf_threshold,
+        )
         loss = loss + lambda_scene * l_kl
         parts["kl"] = float(l_kl.detach())
 
     # Load-balance.
     if router_probs is not None and lambda_balance > 0:
-        l_balance = load_balance(router_probs)
+        l_balance = load_balance(router_probs[:main_count])
         loss = loss + lambda_balance * l_balance
         parts["balance"] = float(l_balance.detach())
 
-    # Temporal smoothness.
-    if router_probs is not None and "session_ids" in batch and lambda_smooth > 0:
-        l_smooth = temporal_smoothness(router_probs, batch["session_ids"])
-        loss = loss + lambda_smooth * l_smooth
-        parts["smooth"] = float(l_smooth.detach())
+    # Temporal smoothness — successor pairs when the caller supplies them (SRV-7),
+    # else the legacy batch-row-adjacency term.
+    if router_probs is not None and lambda_smooth > 0:
+        l_smooth: Tensor | None = None
+        if "succ_positions" in batch:
+            l_smooth = temporal_smoothness_pairs(router_probs, batch["succ_positions"])
+        elif "session_ids" in batch:
+            l_smooth = temporal_smoothness(router_probs[:main_count], batch["session_ids"])
+        if l_smooth is not None:
+            loss = loss + lambda_smooth * l_smooth
+            parts["smooth"] = float(l_smooth.detach())
 
     parts["total"] = float(loss.detach())
     return loss, parts

@@ -104,6 +104,51 @@ def _batch_dict(split: SplitTensors, index: Tensor) -> dict[str, Tensor]:
     }
 
 
+def _batch_with_successors(succ_idx: Tensor, index: Tensor) -> tuple[Tensor, Tensor]:
+    """Append each batch row's time successor and map it to a local position (SRV-7).
+
+    For a (shuffled) batch ``index`` into a split, gather each row's time-successor
+    global row (``succ_idx``); any successor not already in the batch is appended so
+    a single forward pass contains both members of every adjacent pair. The returned
+    ``succ_positions`` (length == ``len(full_index)``) points each MAIN row (the
+    leading ``len(index)`` rows) to its successor's LOCAL position in the forward
+    tensor, and is ``-1`` for the main rows without a successor and for all appended
+    rows — so :func:`~research.models.losses.temporal_smoothness_pairs` penalises
+    exactly the true adjacent pairs originating from the batch, once each.
+
+    Args:
+        succ_idx: The split's ``[N]`` time-successor index (global row or ``-1``).
+        index: The ``[B]`` batch row indices into the split.
+
+    Returns:
+        ``(full_index, succ_positions)`` — the forward-pass row indices (main rows
+        first, appended successors last) and the per-row successor local positions.
+    """
+    device = index.device
+    b = int(index.shape[0])
+    succ_global = succ_idx.to(device)[index]  # [B] global successor row or -1
+    index_list = index.tolist()
+    index_set = set(int(i) for i in index_list)
+    extras: list[int] = []
+    seen: set[int] = set()
+    for s in succ_global.tolist():
+        s = int(s)
+        if s >= 0 and s not in index_set and s not in seen:
+            extras.append(s)
+            seen.add(s)
+    if extras:
+        full_index = torch.cat([index, torch.tensor(extras, dtype=torch.long, device=device)])
+    else:
+        full_index = index
+    global_to_local = {int(g): p for p, g in enumerate(full_index.tolist())}
+    succ_positions = torch.full((int(full_index.shape[0]),), -1, dtype=torch.long, device=device)
+    for p in range(b):
+        s = int(succ_global[p])
+        if s >= 0:
+            succ_positions[p] = global_to_local.get(s, -1)
+    return full_index, succ_positions
+
+
 @torch.no_grad()
 def _val_loss(model: nn.Module, split: SplitTensors, cfg: dict[str, Any]) -> float:
     """Compute the total loss on a whole split (validation), or ``nan`` if empty."""
@@ -112,7 +157,13 @@ def _val_loss(model: nn.Module, split: SplitTensors, cfg: dict[str, Any]) -> flo
     model.eval()
     outputs = _forward(model, split.features, split.weak_probs, split.hash_ids)
     index = torch.arange(split.features.shape[0])
-    loss, _ = total_loss(outputs, _batch_dict(split, index), cfg)
+    batch = _batch_dict(split, index)
+    # Whole-split forward: local positions == global rows, so the split's own
+    # successor index doubles as ``succ_positions`` (SRV-7). Numerically identical
+    # to the legacy adjacent-row smoothness here (rows are already time-ordered).
+    batch["main_count"] = int(split.features.shape[0])  # type: ignore[assignment]
+    batch["succ_positions"] = split.succ_idx
+    loss, _ = total_loss(outputs, batch, cfg)
     return float(loss.detach())
 
 
@@ -157,6 +208,10 @@ def train_model(
         "best_epoch": -1,
         "best_val_loss": float("inf"),
         "param_count": int(sum(p.numel() for p in model.parameters())),
+        # SRV-9: training-effort observability (written into metrics.json).
+        "epochs_configured": int(epochs),
+        "epochs_run": 0,
+        "early_stopped": False,
     }
     if hasattr(model, "active_param_count"):
         history["active_param_count"] = int(model.active_param_count())  # type: ignore[operator]
@@ -178,8 +233,17 @@ def train_model(
         parts_acc: dict[str, float] = {}
         for start in range(0, n_train, batch_size):
             index = perm[start : start + batch_size]
-            outputs = _forward(model, train_split.features[index], train_split.weak_probs[index], train_split.hash_ids[index])
-            loss, parts = total_loss(outputs, _batch_dict(train_split, index), cfg)
+            # SRV-7: include each row's true time-successor in the forward pass so
+            # the temporal-smoothness term penalises adjacent windows, not random
+            # same-session pairs. auth/KL/balance still score only the main rows.
+            full_index, succ_positions = _batch_with_successors(train_split.succ_idx, index)
+            outputs = _forward(
+                model, train_split.features[full_index], train_split.weak_probs[full_index], train_split.hash_ids[full_index]
+            )
+            batch = _batch_dict(train_split, index)
+            batch["main_count"] = int(index.shape[0])  # type: ignore[assignment]
+            batch["succ_positions"] = succ_positions
+            loss, parts = total_loss(outputs, batch, cfg)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -210,8 +274,10 @@ def train_model(
             no_improve += 1
             if no_improve >= patience:
                 logger.log("early_stop", epoch=epoch, best_epoch=history["best_epoch"])
+                history["early_stopped"] = True
                 break
 
+    history["epochs_run"] = len(history["epochs"])
     model.load_state_dict(best_state)
     if history["best_epoch"] < 0:  # never improved (e.g. single degenerate epoch)
         history["best_epoch"] = len(history["epochs"]) - 1

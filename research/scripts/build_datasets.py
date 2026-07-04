@@ -85,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(args.config)
     feature_mode = args.feature_mode or cfg["features"]["mode"]
     seed = int(cfg.get("seed", 42))
+    study_timezone = str(cfg.get("preprocess", {}).get("study_timezone", "Asia/Shanghai"))
 
     ds_dir = build_dataset(
         args.input,
@@ -94,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         seed=seed,
         n_impostor_per_genuine=int(args.n_impostor_per_genuine),
         name=args.name,
+        study_timezone=study_timezone,
     )
     manifest = json.loads((ds_dir / "split_manifest.json").read_text(encoding="utf-8"))
 

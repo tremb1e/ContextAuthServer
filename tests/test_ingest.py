@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import lz4.frame
 from prometheus_client.parser import text_string_to_metric_families
@@ -211,6 +212,74 @@ def test_ingest_rejects_non_editable_visible_text_but_view_id_field_is_supported
     batch = sample_batch()
     batch["context_events"][0]["root_nodes"][0]["text"] = "visible UI label"
     batch["context_events"][0]["root_nodes"][0]["viewIdResourceName"] = "com.example:id/confirm"
+    response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
+    assert response.status_code == 400
+    assert response.json()["detail"] == "schema_validation_failed"
+
+
+def _clean_event_detail() -> dict[str, Any]:
+    """A v1.1.2-shaped ``event_detail``: structural metadata only.
+
+    No text-length/keystroke telemetry keys; the four index keys are the -1
+    sentinel (as a sanitized text event carries them).
+    """
+    return {
+        "event_type_id": 16,
+        "event_type_name": "TYPE_VIEW_TEXT_CHANGED",
+        "event_package_name": "com.example.target",
+        "source_class_name": "android.widget.EditText",
+        "scrollable": False,
+        "scroll_x": 0,
+        "scroll_y": 0,
+        "from_index": -1,
+        "to_index": -1,
+        "item_count": -1,
+        "current_item_index": -1,
+        "password": False,
+    }
+
+
+def test_ingest_accepts_clean_event_detail(server_client) -> None:
+    """A sanitized ``event_detail`` (no text telemetry, indices == -1) is stored."""
+    batch = sample_batch()
+    event = batch["context_events"][0]
+    event["event_type"] = "TYPE_VIEW_TEXT_CHANGED"
+    event["event_detail"] = _clean_event_detail()
+    response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
+    assert response.status_code == 200
+    assert response.json()["stored"] is True
+
+
+def test_ingest_quarantines_event_detail_before_text_length(server_client) -> None:
+    """A TEXT_CHANGED event whose event_detail carries before_text_length is quarantined.
+
+    before_text_length reconstructs the typed-length sequence (keystroke-dynamics
+    side channel) — the event_detail_forbidden_text_telemetry red-line.
+    """
+    batch = sample_batch()
+    event = batch["context_events"][0]
+    event["event_type"] = "TYPE_VIEW_TEXT_CHANGED"
+    detail = _clean_event_detail()
+    detail["before_text_length"] = 23
+    event["event_detail"] = detail
+    response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
+    assert response.status_code == 400
+    assert response.json()["detail"] == "schema_validation_failed"
+
+
+def test_ingest_quarantines_text_selection_item_count(server_client) -> None:
+    """TYPE_VIEW_TEXT_SELECTION_CHANGED with item_count != -1 (cursor/length) is quarantined.
+
+    item_count on a text-selection event is the current text length; it must be
+    unset (absent or -1) — the event_detail_text_index_must_be_unset red-line.
+    """
+    batch = sample_batch()
+    event = batch["context_events"][0]
+    event["event_type"] = "TYPE_VIEW_TEXT_SELECTION_CHANGED"
+    detail = _clean_event_detail()
+    detail["event_type_name"] = "TYPE_VIEW_TEXT_SELECTION_CHANGED"
+    detail["item_count"] = 28
+    event["event_detail"] = detail
     response = server_client.post("/api/v1/ingest", json=envelope_for(batch))
     assert response.status_code == 400
     assert response.json()["detail"] == "schema_validation_failed"

@@ -160,8 +160,16 @@ def eer_bar(results_dir: Path, fig_dir: Path) -> list[Path]:
         return []
     names = [n for n in MODEL_ORDER if n in metrics]
     eers = [_to_float(metrics[n].get("eer")) for n in names]
-    los = [_to_float(metrics[n].get("eer_by_user_bootstrap", {}).get("ci_lo")) for n in names]
-    his = [_to_float(metrics[n].get("eer_by_user_bootstrap", {}).get("ci_hi")) for n in names]
+    los, his = [], []
+    for n in names:
+        # PRIMARY: §18.3 pooled-bootstrap CI; fall back to the legacy by-user CI.
+        pooled = metrics[n].get("eer_pooled_bootstrap") or {}
+        lo, hi = _to_float(pooled.get("ci_lo")), _to_float(pooled.get("ci_hi"))
+        if not (np.isfinite(lo) and np.isfinite(hi)):
+            by_user = metrics[n].get("eer_by_user_bootstrap", {})
+            lo, hi = _to_float(by_user.get("ci_lo")), _to_float(by_user.get("ci_hi"))
+        los.append(lo)
+        his.append(hi)
     lower = [max(0.0, e - lo) if np.isfinite(lo) and np.isfinite(e) else 0.0 for e, lo in zip(eers, los)]
     upper = [max(0.0, hi - e) if np.isfinite(hi) and np.isfinite(e) else 0.0 for e, hi in zip(eers, his)]
 
@@ -176,11 +184,11 @@ def eer_bar(results_dir: Path, fig_dir: Path) -> list[Path]:
 
 
 def roc_curves(results_dir: Path, fig_dir: Path) -> list[Path]:
-    """ROC-AUC comparison as a bar chart proxy (no per-pair scores persisted).
+    """True per-baseline ROC curves from each run's ``roc_points.csv`` (SRV-4).
 
-    The runner stores pooled EER/AUC (not the full score vectors), so a faithful
-    ROC curve cannot be redrawn post-hoc; this figure shows ROC-AUC per baseline
-    instead (documented). Skips if no metrics.
+    Reads the persisted ROC vertices (fpr, tpr) each run writes and draws one
+    faithful ROC curve per baseline plus the chance diagonal. When no run has a
+    ``roc_points.csv`` (older result trees) it degrades to the ROC-AUC bar proxy.
 
     Args:
         results_dir: The results root.
@@ -189,9 +197,38 @@ def roc_curves(results_dir: Path, fig_dir: Path) -> list[Path]:
     Returns:
         The written figure paths (empty if skipped).
     """
+    index = _runs_index(results_dir)
+    runs = index.get("runs", {})
+    curves: list[tuple[str, list[float], list[float]]] = []
+    for name in MODEL_ORDER:
+        info = runs.get(name)
+        if not info or not info.get("run_dir"):
+            continue
+        points = _read_csv(Path(info["run_dir"]) / "roc_points.csv")
+        finite = [
+            (a, b)
+            for a, b in ((_to_float(r.get("fpr")), _to_float(r.get("tpr"))) for r in points)
+            if np.isfinite(a) and np.isfinite(b)
+        ]
+        if len(finite) >= 2:
+            curves.append((name, [a for a, _ in finite], [b for _, b in finite]))
+    if curves:
+        fig, ax = plt.subplots(figsize=(6, 5))
+        for name, fpr, tpr in curves:
+            ax.plot(fpr, tpr, linewidth=1.4, label=MODEL_LABELS.get(name, name))
+        ax.plot([0, 1], [0, 1], color="grey", linestyle="--", linewidth=1.0)
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(0.0, 1.0)
+        ax.set_xlabel(r"$\mathrm{FAR}$")
+        ax.set_ylabel(r"$\mathrm{TPR}$")
+        ax.grid(alpha=0.25)
+        ax.legend(fontsize=9, loc="lower right")
+        return save(fig, "roc_curves", fig_dir)
+
+    # Fallback: ROC-AUC bar proxy when no run persisted per-pair ROC points.
     metrics = _run_metrics(results_dir)
     if not metrics:
-        _skip("roc_curves", "no baseline metrics found")
+        _skip("roc_curves", "no roc_points.csv and no baseline metrics found")
         return []
     names = [n for n in MODEL_ORDER if n in metrics]
     aucs = [_to_float(metrics[n].get("roc_auc")) for n in names]
@@ -579,6 +616,99 @@ PLOT_FUNCTIONS: dict[str, Callable[..., list[Path]]] = {
     "sensor_channel_ablation": sensor_channel_ablation,
 }
 
+#: Per-figure Chinese caption (§12.3): 含义 / 坐标轴 / 结论要点. Written to
+#: ``plots/{name}.md`` beside each figure (the figures themselves stay CJK-free).
+PLOT_DESCRIPTIONS: dict[str, dict[str, str]] = {
+    "eer_bar": {
+        "含义": "各基线（M0–M10）的等错误率 EER 柱状对比，误差须为 §18.3 池化自助法 95% 置信区间（缺失时回退 by-user 口径）。",
+        "坐标轴": "横轴=模型（M0–M10）；纵轴=EER（越低越好）。",
+        "结论要点": "对比 M7（弱监督 MoE）与各基线的高低与 CI 是否重叠，判断改进是否稳健。",
+    },
+    "roc_curves": {
+        "含义": "各基线的真实 ROC 曲线（由每个 run 落盘的 roc_points.csv 重绘）；无分数文件时回退为 ROC-AUC 柱状代理。",
+        "坐标轴": "横轴=FAR（误accept率）；纵轴=TPR（真accept率）；虚线为随机对角线。",
+        "结论要点": "曲线越靠左上越好；对比各模型在低 FAR 区的可用性。",
+    },
+    "topk_ablation": {
+        "含义": "top-k 稀疏门控中激活专家数 k 对验证集 EER 的影响曲线。",
+        "坐标轴": "横轴=激活专家数 k（1..7）；纵轴=EER。",
+        "结论要点": "定位 EER 随 k 的拐点，支撑 k* 的选择（详见 Pareto 图）。",
+    },
+    "topk_eer_latency_pareto": {
+        "含义": "EER 与推理代价（平均激活专家数）的 Pareto 散点；前沿高亮，k* 以黑圈标注。",
+        "坐标轴": "横轴=平均激活专家数（代价代理）；纵轴=EER。",
+        "结论要点": "k* 应落在“再增代价收益递减”的前沿拐点，验证集冻结选出。",
+    },
+    "per_scene_eer": {
+        "含义": "M7 在 7 个交互场景（I0–I6）上的分场景 EER。",
+        "坐标轴": "横轴=场景 I0–I6；纵轴=EER。",
+        "结论要点": "识别难/易场景，解释专家专化与弱标签质量的场景差异。",
+    },
+    "expert_utilization": {
+        "含义": "M7 每个专家在测试窗口 top-k 中被激活的比例（利用率）。",
+        "坐标轴": "横轴=专家 I0–I6；纵轴=利用率（top-k 命中比例）。",
+        "结论要点": "利用率是否均衡；单专家垄断说明路由退化（对照 M9 随机路由）。",
+    },
+    "expert_scene_heatmap": {
+        "含义": "行=弱标签场景、列=专家的平均门控权重热力图，反映“场景→专家”的专化对齐。",
+        "坐标轴": "横轴=专家 I0–I6；纵轴=弱标签场景 I0–I6；色深=平均门控权重。",
+        "结论要点": "对角占优表示专家按场景专化；离散漂移提示路由弱监督失效。",
+    },
+    "weak_label_distribution": {
+        "含义": "train/val/test 三划分上弱标签 top1 场景的窗口计数分布。",
+        "坐标轴": "横轴=场景 I0–I6；纵轴=窗口数；分组=划分。",
+        "结论要点": "检查场景覆盖与划分间的分布漂移（尤其 leave_app_out 下）。",
+    },
+    "package_ablation": {
+        "含义": "包名依赖消融：M3（仅包名路由）/M7（全特征）/M8（去包名）EER 对比（RQ6）。",
+        "坐标轴": "横轴=模型；纵轴=EER。",
+        "结论要点": "M8≈M7 说明模型未过度依赖前台包名。",
+    },
+    "privacy_ablation": {
+        "含义": "隐私/粗化级别的 EER 对比（SRV-10 已改为三档真实互异：粗化 bounds、基线、仅类别）。",
+        "坐标轴": "横轴=隐私级别；纵轴=EER。",
+        "结论要点": "量化隐私-效用权衡（RQ7）；级别越严 EER 通常上升。",
+    },
+    "feature_ablation": {
+        "含义": "特征/损失族消融（去 UI、去传感器、去包名、去树 diff、去时间平滑、去负载均衡）的 EER。",
+        "坐标轴": "横轴=消融项；纵轴=EER。",
+        "结论要点": "各组件对判别力的边际贡献；升高越多越重要。",
+    },
+    "sensor_channel_ablation": {
+        "含义": "传感器通道消融（去 accel/gyro/mag）的 EER。",
+        "坐标轴": "横轴=去除的通道；纵轴=EER。",
+        "结论要点": "定位主导 IMU 通道及三通道互补性。",
+    },
+}
+
+
+def write_plot_notes(fig_dir: str | Path, names: list[str]) -> list[Path]:
+    """Write a Chinese ``plots/{name}.md`` caption per produced figure (§12.3).
+
+    Args:
+        fig_dir: The figures directory (where the PDFs/PNGs live).
+        names: The figure names that were actually produced.
+
+    Returns:
+        The list of written ``.md`` paths.
+    """
+    figs = Path(fig_dir)
+    figs.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for name in names:
+        desc = PLOT_DESCRIPTIONS.get(name)
+        if not desc:
+            continue
+        lines = [f"# 图 `{name}` 说明", ""]
+        for key in ("含义", "坐标轴", "结论要点"):
+            if key in desc:
+                lines.append(f"- **{key}**：{desc[key]}")
+        lines += ["", f"> 图文件：`{name}.pdf` / `{name}.png`（Times New Roman、无标题、无中文、300dpi）。", ""]
+        md_path = figs / f"{name}.md"
+        md_path.write_text("\n".join(lines), encoding="utf-8")
+        written.append(md_path)
+    return written
+
 
 def make_all_plots(results_dir: str | Path, fig_dir: str | Path, data_dir: str | Path | None = None) -> dict[str, list[Path]]:
     """Render every required figure, skipping any whose input is missing.
@@ -599,4 +729,6 @@ def make_all_plots(results_dir: str | Path, fig_dir: str | Path, data_dir: str |
             written[name] = func(results, figs, data_dir=Path(data_dir) if data_dir else None)
         else:
             written[name] = func(results, figs)
+    # §12.3: a Chinese caption .md beside every figure actually produced.
+    write_plot_notes(figs, [name for name, paths in written.items() if paths])
     return written

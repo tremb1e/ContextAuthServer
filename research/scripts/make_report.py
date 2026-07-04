@@ -33,6 +33,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--results", type=Path, required=True, help="results root (runs_index.json / topk_sweep.csv / run dirs)")
     parser.add_argument("--out", type=Path, required=True, help="destination report.md path")
     parser.add_argument("--data", type=Path, default=None, help="optional dataset dir (for dataset summary + weak-label figure)")
+    parser.add_argument(
+        "--data-provenance",
+        choices=["synthetic", "real"],
+        default=None,
+        help="explicit data-source wording (default: auto-infer from the split manifest)",
+    )
     return parser
 
 
@@ -60,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     args = build_arg_parser().parse_args(argv)
     data_dir = _resolve_data_dir(args.data)
-    report_path = make_report(args.results, args.out, data_dir=data_dir)
+    report_path = make_report(args.results, args.out, data_dir=data_dir, data_provenance=args.data_provenance)
 
     plots_dir = report_path.parent / "plots"
     pdfs = sorted(plots_dir.glob("*.pdf")) if plots_dir.exists() else []

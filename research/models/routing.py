@@ -6,7 +6,9 @@ router_logits[B, n_experts]``. The 5 kinds:
 * ``learned`` — a small MLP on the feature vector ``x`` (trained end-to-end).
 * ``fixed_rule`` — ``log`` of the weak-label probability vector, no gradient
   (the M4/M5 fixed-rule baseline; router is untrained).
-* ``random`` — fixed-seed random-but-constant logits (M9); identical every call.
+* ``random`` — fixed-seed PER-WINDOW random logits (M9); each window draws an
+  independent random expert subset from a seed-deterministic slot table, so the
+  routing is genuinely random per window yet fully reproducible.
 * ``hash`` — hashes the per-window ``ids`` to a one-hot expert (M10).
 * ``package_only`` — a learned MLP on the package feature slice only (M3);
   the caller passes ``x`` already sliced to the package columns.
@@ -96,35 +98,57 @@ class FixedRuleRouter(nn.Module):
 
 
 class RandomRouter(nn.Module):
-    """Router with fixed random logits per expert (constant across calls).
+    """Router emitting PER-WINDOW random logits from a seed-deterministic table.
 
-    Realises M9: routing is random but *deterministic* given ``seed`` (a fixed
-    per-expert bias broadcast to the batch), so results are reproducible.
+    Realises M9: each window is routed to a random expert subset that depends on
+    its per-window ``ids`` (the stable hash id), so different windows generally
+    activate different experts — a genuine random-routing baseline rather than a
+    single fixed expert subset. The routing is fully reproducible: a seed-fixed
+    ``[n_slots, n_experts]`` table is indexed by ``slot = id % n_slots``, so the
+    same ``seed`` + same window id always yields the same logits (order- and
+    epoch-independent), and a different ``seed`` yields a different routing.
+
+    The table is a NON-persistent buffer (it is fully reconstructable from
+    ``seed``), so checkpoints do not grow and are unaffected by ``n_slots``.
 
     Args:
         n_experts: Number of experts.
-        seed: RNG seed for the fixed logits.
+        seed: RNG seed for the random logits table.
+        n_slots: Number of distinct slot rows in the table. 8192 slots make
+            collisions among a few hundred–thousand windows rare and harmless
+            (a collision merely shares one random subset — still random routing).
     """
 
-    def __init__(self, n_experts: int = N_SCENARIOS, seed: int = 42) -> None:
+    def __init__(self, n_experts: int = N_SCENARIOS, seed: int = 42, n_slots: int = 8192) -> None:
         super().__init__()
+        self.n_experts = int(n_experts)
+        self.n_slots = int(n_slots)
         generator = torch.Generator().manual_seed(int(seed))
-        logits = torch.randn(int(n_experts), generator=generator)
-        self.register_buffer("fixed_logits", logits, persistent=True)
+        table = torch.randn(self.n_slots, self.n_experts, generator=generator)
+        # Non-persistent: the table is fully determined by ``seed``; keeping it
+        # out of state_dict leaves checkpoints unchanged in size/content.
+        self.register_buffer("logits_table", table, persistent=False)
 
     def forward(self, x: Tensor, weak_probs: Tensor | None = None, ids: Tensor | None = None) -> Tensor:
-        """Return the fixed random logits broadcast to the batch.
+        """Return per-window random logits indexed by ``ids`` (hash ids).
 
         Args:
-            x: Feature tensor ``[B, input_dim]`` (only used for batch shape).
+            x: Feature tensor ``[B, input_dim]`` (only used for batch shape/device).
             weak_probs: Unused.
-            ids: Unused.
+            ids: Integer per-window hash ids ``[B]``; if ``None`` (only when the
+                router is exercised outside the training/eval pipeline, which
+                always passes hash ids) a positional ``arange % n_slots`` fallback
+                is used so the call still returns per-row-distinct logits.
 
         Returns:
-            Router logits ``[B, n_experts]`` (identical rows).
+            Router logits ``[B, n_experts]`` (generally distinct rows per window).
         """
         batch = x.shape[0]
-        return self.fixed_logits.to(device=x.device, dtype=x.dtype).unsqueeze(0).expand(batch, -1)
+        if ids is None:
+            slot = torch.arange(batch, device=x.device, dtype=torch.long) % self.n_slots
+        else:
+            slot = ids.to(device=x.device, dtype=torch.long) % self.n_slots
+        return self.logits_table.to(device=x.device, dtype=x.dtype)[slot]
 
 
 class HashRouter(nn.Module):
@@ -184,7 +208,7 @@ def build_router(
             feature dim; for ``package_only`` the caller passes the package-slice
             dim and must feed the router the sliced ``x``.
         n_experts: Number of experts.
-        seed: Seed for the ``random`` router's fixed logits.
+        seed: Seed for the ``random`` router's per-window random logits table.
         hidden: Hidden width for learned routers.
 
     Returns:

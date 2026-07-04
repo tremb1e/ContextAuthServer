@@ -136,9 +136,10 @@ def sample_matched_impostors(
     Args:
         windows: The full window table (row index == row id).
         genuine_idx: Row indices of the genuine test windows to attack.
-        pool_idx: Row indices forming the impostor candidate pool (typically the
-            whole dataset minus the genuine user's rows — the builder passes the
-            appropriate pool). Any pool row sharing the genuine user is skipped.
+        pool_idx: Row indices forming the impostor candidate pool. The builder
+            passes the HELD-OUT test split rows only (SRV-6), so impostor windows
+            never come from train/val. Any pool row sharing the genuine user is
+            skipped (user-level disjointness).
         seed: Deterministic sampling salt.
         n_per_genuine: Number of impostor windows to sample per genuine window.
         relaxed_topk: Whether to fall back to a top-k membership match when no

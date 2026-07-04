@@ -1,9 +1,16 @@
-"""By-user bootstrap CI, Holm correction, paired delta (_recon_hmog §2/§3a/§4).
+"""Bootstrap CIs (pooled + by-user), Holm correction, paired delta (§18.3).
 
-* :func:`bootstrap_ci` — mirrors HMOG ``bootstrap.py`` §2: resamples a **per-user
-  EER vector** with replacement and returns ``(mean, lo, hi)`` percentile CI. The
-  unit of resampling is the user (each value is one user's EER), so this IS a
-  by-user bootstrap.
+* :func:`pooled_bootstrap_ci` — the exp_prompt §18.3 PRIMARY protocol: resample
+  **users** with replacement, rebuild the genuine + matched-impostor pairs of the
+  resampled users, and RECOMPUTE the pooled EER each replicate (not the mean of
+  per-user EERs). Returns ``{mean, ci_lo, ci_hi, n_boot_effective}``.
+* :func:`user_resample_indices` — the shared seed-deterministic user-resample
+  index matrix, so an M7-vs-baseline paired delta is computed on the SAME
+  replicate indices (§18.3 "paired delta on the same resample indices").
+* :func:`bootstrap_ci` — the legacy by-user vector bootstrap (HMOG parity);
+  RETAINED as a SECONDARY report only. It resamples a per-user EER vector and
+  returns its mean CI — this is the "mean of per-user EER" estimator §18.3 marks
+  as NOT the main protocol; prefer :func:`pooled_bootstrap_ci`.
 * :func:`holm_correction` — mirrors HMOG ``pipeline.py`` §3a step-down
   Holm-Bonferroni: NaN-safe, preserves input order, enforces monotone
   non-decreasing adjusted p.
@@ -21,6 +28,159 @@ from typing import Sequence
 import numpy as np
 from scipy.stats import binomtest, wilcoxon
 
+from research.experiments.metrics import compute_eer_threshold
+
+
+def user_resample_indices(n_users: int, n_boot: int, seed: int) -> np.ndarray:
+    """Return a seed-deterministic ``[n_boot, n_users]`` user-resample index matrix.
+
+    Row ``b`` holds ``n_users`` indices in ``[0, n_users)`` drawn with replacement
+    — the users kept in bootstrap replicate ``b``. Sharing this one matrix across
+    configurations realises the §18.3 rule that an M7-vs-baseline paired delta is
+    evaluated on the SAME resampled users each replicate.
+
+    Args:
+        n_users: Number of distinct users to resample from.
+        n_boot: Number of bootstrap replicates.
+        seed: Deterministic RNG seed.
+
+    Returns:
+        An integer array of shape ``[n_boot, n_users]`` (empty columns if
+        ``n_users == 0``).
+    """
+    rng = np.random.default_rng(seed)
+    if n_users <= 0:
+        return np.zeros((int(n_boot), 0), dtype=int)
+    return rng.integers(0, int(n_users), size=(int(n_boot), int(n_users)))
+
+
+def _rows_by_user(users: Sequence[object]) -> tuple[list[str], dict[str, np.ndarray]]:
+    """Return ``(sorted_users, {user: row_indices})`` for a per-pair user vector."""
+    users_arr = np.asarray([str(u) for u in users], dtype=object)
+    uniq = sorted(set(users_arr.tolist()))
+    return uniq, {u: np.where(users_arr == u)[0] for u in uniq}
+
+
+def pooled_bootstrap_ci(
+    labels: Sequence[float],
+    scores: Sequence[float],
+    users: Sequence[object],
+    *,
+    n_boot: int = 1000,
+    seed: int = 0,
+    alpha: float = 0.05,
+    resample_matrix: np.ndarray | None = None,
+) -> dict[str, float]:
+    """§18.3 primary CI: resample users → rebuild pairs → recompute POOLED EER.
+
+    Each pair (row) is attributed to its attacked genuine user; resampling whole
+    user blocks with replacement carries that user's genuine AND matched-impostor
+    rows together (the impostor pairs stay scene-matched by construction), and the
+    pooled EER is recomputed on the resampled multiset. The returned ``mean`` is
+    the pooled point EER on the full data; ``ci_lo``/``ci_hi`` are the
+    ``[alpha/2, 1-alpha/2]`` quantiles of the replicate EERs.
+
+    Args:
+        labels: Binary labels (1 == genuine) aligned with ``scores``/``users``.
+        scores: Match scores (larger == genuine).
+        users: The attacked (genuine) user id per pair.
+        n_boot: Number of bootstrap replicates (ignored if ``resample_matrix``).
+        seed: Deterministic RNG seed (ignored if ``resample_matrix`` is given).
+        alpha: Two-sided level (0.05 -> 95 % CI).
+        resample_matrix: Optional pre-built ``user_resample_indices`` (columns ==
+            number of distinct users here, sorted); lets callers pair configs on
+            identical replicates.
+
+    Returns:
+        ``{mean, ci_lo, ci_hi, n_boot_effective}`` — all ``nan`` (and
+        ``n_boot_effective == 0``) when there are fewer than two users or no
+        finite replicate EER.
+    """
+    labels_arr = np.asarray(labels)
+    scores_arr = np.asarray(scores, dtype=float)
+    uniq, rows = _rows_by_user(users)
+    nan_result = {"mean": float("nan"), "ci_lo": float("nan"), "ci_hi": float("nan"), "n_boot_effective": 0}
+    if len(uniq) < 2:
+        return nan_result
+    matrix = resample_matrix if resample_matrix is not None else user_resample_indices(len(uniq), n_boot, seed)
+    if matrix.shape[1] != len(uniq):
+        matrix = user_resample_indices(len(uniq), matrix.shape[0], seed)
+    replicate_eers: list[float] = []
+    for b in range(matrix.shape[0]):
+        picked_rows = np.concatenate([rows[uniq[j]] for j in matrix[b]]) if matrix.shape[1] else np.empty(0, dtype=int)
+        eer, _ = compute_eer_threshold(labels_arr[picked_rows], scores_arr[picked_rows])
+        if np.isfinite(eer):
+            replicate_eers.append(float(eer))
+    if not replicate_eers:
+        return nan_result
+    arr = np.asarray(replicate_eers, dtype=float)
+    point, _ = compute_eer_threshold(labels_arr, scores_arr)
+    return {
+        "mean": float(point),
+        "ci_lo": float(np.quantile(arr, alpha / 2.0)),
+        "ci_hi": float(np.quantile(arr, 1.0 - alpha / 2.0)),
+        "n_boot_effective": len(replicate_eers),
+    }
+
+
+def pooled_paired_delta(
+    labels_a: Sequence[float],
+    scores_a: Sequence[float],
+    users_a: Sequence[object],
+    labels_b: Sequence[float],
+    scores_b: Sequence[float],
+    users_b: Sequence[object],
+    *,
+    n_boot: int = 1000,
+    seed: int = 0,
+    alpha: float = 0.05,
+) -> dict[str, float]:
+    """Same-replicate pooled EER delta ``B - A`` (positive == A better; §18.3).
+
+    Resamples the users SHARED by both configs with a single
+    :func:`user_resample_indices` matrix, recomputes each config's pooled EER on
+    the same resampled users per replicate, and returns the ``B - A`` delta CI (so
+    for A == M7 vs B == baseline, a positive delta means M7 has the lower EER).
+
+    Returns:
+        ``{delta_mean, ci_lo, ci_hi, n_boot_effective, n_shared_users}`` (nan when
+        fewer than two shared users or no finite replicate).
+    """
+    ua, rows_a = _rows_by_user(users_a)
+    ub, rows_b = _rows_by_user(users_b)
+    shared = sorted(set(ua) & set(ub))
+    nan_result = {
+        "delta_mean": float("nan"),
+        "ci_lo": float("nan"),
+        "ci_hi": float("nan"),
+        "n_boot_effective": 0,
+        "n_shared_users": len(shared),
+    }
+    if len(shared) < 2:
+        return nan_result
+    la, sa = np.asarray(labels_a), np.asarray(scores_a, dtype=float)
+    lb, sb = np.asarray(labels_b), np.asarray(scores_b, dtype=float)
+    matrix = user_resample_indices(len(shared), n_boot, seed)
+    deltas: list[float] = []
+    for b in range(matrix.shape[0]):
+        picked = matrix[b]
+        rows_a_b = np.concatenate([rows_a[shared[j]] for j in picked])
+        rows_b_b = np.concatenate([rows_b[shared[j]] for j in picked])
+        eer_a, _ = compute_eer_threshold(la[rows_a_b], sa[rows_a_b])
+        eer_b, _ = compute_eer_threshold(lb[rows_b_b], sb[rows_b_b])
+        if np.isfinite(eer_a) and np.isfinite(eer_b):
+            deltas.append(float(eer_b - eer_a))
+    if not deltas:
+        return nan_result
+    arr = np.asarray(deltas, dtype=float)
+    return {
+        "delta_mean": float(arr.mean()),
+        "ci_lo": float(np.quantile(arr, alpha / 2.0)),
+        "ci_hi": float(np.quantile(arr, 1.0 - alpha / 2.0)),
+        "n_boot_effective": len(deltas),
+        "n_shared_users": len(shared),
+    }
+
 
 def bootstrap_ci(
     values: Sequence[float],
@@ -31,11 +191,12 @@ def bootstrap_ci(
 ) -> tuple[float, float, float]:
     """Return ``(mean, lo, hi)`` percentile CI over a by-user EER vector.
 
-    Mirrors HMOG ``bootstrap_ci`` (_recon_hmog §2): non-finite values are
-    dropped, then ``n_boot`` bootstrap resamples (with replacement, one draw of
-    ``len(values)`` per iteration) give the mean distribution whose
-    ``[alpha/2, 1-alpha/2]`` quantiles are the CI. Because each input value is
-    one user's EER, resampling the values IS a by-user bootstrap.
+    SECONDARY (HMOG-parity) estimator only. Non-finite values are dropped, then
+    ``n_boot`` resamples (with replacement) of the per-user EER vector give the
+    MEAN distribution whose ``[alpha/2, 1-alpha/2]`` quantiles are the CI. This is
+    the "mean of per-user EER" quantity exp_prompt §18.3 explicitly marks as NOT
+    the main protocol; the pooled-metric CI (:func:`pooled_bootstrap_ci`) is the
+    primary口径. Retained for backward compatibility and cross-checking.
 
     Args:
         values: Per-user metric values (e.g. per-user EER).

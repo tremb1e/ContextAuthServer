@@ -25,6 +25,37 @@ CANONICAL_TASK_CATEGORIES = {"I0", "I1", "I2", "I3", "I4", "I5", "I6"}
 LEGACY_TASK_CATEGORIES = {"I7", "C0", "C1", "C2", "C3", "C4", "C5", "C6"}
 TASK_CATEGORIES = CANONICAL_TASK_CATEGORIES | LEGACY_TASK_CATEGORIES
 
+# event_detail privacy red-line (2026-07-05, SRV-1).
+#
+# The app's per-event ``event_detail`` object carries structural
+# AccessibilityEvent metadata only. These six keys are text-length / keystroke
+# telemetry that reconstructs a typed-length sequence (a keystroke-dynamics side
+# channel) and are FORBIDDEN on every event. The four index keys additionally
+# leak cursor position on the three text events below, so on those events they
+# must be unset (absent or the ``-1`` sentinel). Non-text events (e.g.
+# TYPE_VIEW_SCROLLED) legitimately carry the index keys as visible-range/list
+# structure and are not constrained. A v1.1.2 app strips these on-device; this
+# server-side check quarantines any batch from an older APK that still sends them.
+EVENT_DETAIL_FORBIDDEN_TELEMETRY_KEYS = {
+    "before_text_length",
+    "text_total_length",
+    "content_description_length",
+    "text_entry_count",
+    "added_count",
+    "removed_count",
+}
+TEXT_TELEMETRY_EVENT_TYPES = {
+    "TYPE_VIEW_TEXT_CHANGED",
+    "TYPE_VIEW_TEXT_SELECTION_CHANGED",
+    "TYPE_VIEW_TEXT_TRAVERSED_AT_MOVEMENT_GRANULARITY",
+}
+EVENT_DETAIL_TEXT_INDEX_KEYS = {
+    "from_index",
+    "to_index",
+    "item_count",
+    "current_item_index",
+}
+
 
 class TimeSyncConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
@@ -214,8 +245,12 @@ class TouchEvent(BaseModel):
 
 
 class ContextEvent(BaseModel):
-    # extra="allow" accepts the app's new per-event `event_detail` object
-    # (full AccessibilityEvent metadata, no text content) with no schema change.
+    # extra="allow" keeps the app's per-event ``event_detail`` object (structural
+    # AccessibilityEvent metadata) with no schema change. The privacy red-line on
+    # that object is enforced by ``reject_event_detail_text_telemetry`` below:
+    # event_detail must NOT carry text-length / keystroke-timing / cursor side
+    # channels (SRV-1, 2026-07-05). "no text content" was the historical claim; it
+    # was false in on-disk 0705 data, which is what that validator now blocks.
     model_config = ConfigDict(extra="allow")
 
     event_id: str
@@ -234,6 +269,20 @@ class ContextEvent(BaseModel):
     def reject_window_title_content(self) -> "ContextEvent":
         if self.window_title_redacted not in {None, ""}:
             raise ValueError("window_title_must_be_dropped")
+        return self
+
+    @model_validator(mode="after")
+    def reject_event_detail_text_telemetry(self) -> "ContextEvent":
+        detail = (self.model_extra or {}).get("event_detail")
+        if not isinstance(detail, dict):
+            return self
+        if EVENT_DETAIL_FORBIDDEN_TELEMETRY_KEYS & detail.keys():
+            raise ValueError("event_detail_forbidden_text_telemetry")
+        if self.event_type in TEXT_TELEMETRY_EVENT_TYPES:
+            for key in EVENT_DETAIL_TEXT_INDEX_KEYS:
+                value = detail.get(key)
+                if value is not None and value != -1:
+                    raise ValueError("event_detail_text_index_must_be_unset")
         return self
 
 

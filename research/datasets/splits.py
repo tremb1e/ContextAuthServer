@@ -120,13 +120,14 @@ def _assign_by_fraction(
         return {}
     # Order keys by their stable bucket, then by key for tie-breaking.
     ordered = sorted(unique, key=lambda k: (_stable_bucket(k, seed, 1000), k))
-    if n <= 2:
-        # Degenerate: keep everything trainable; last key doubles as val+test.
-        assignment = {k: "train" for k in ordered}
-        assignment[ordered[-1]] = "test"
-        if n == 2:
-            assignment[ordered[0]] = "train"
-        return assignment
+    if n == 1:
+        # Single group: keep it TRAIN (SRV-5 / SRV-16). An empty train would leave
+        # the model no data; an empty val/test is tolerated downstream (the
+        # evaluator guards empty test), so degrade on the safer side.
+        return {ordered[0]: "train"}
+    if n == 2:
+        # Two groups: one train, one test (val borrows elsewhere / stays empty).
+        return {ordered[0]: "train", ordered[1]: "test"}
 
     n_test = max(1, round(n * test_frac))
     n_val = max(1, round(n * val_frac))
@@ -147,6 +148,70 @@ def _assign_by_fraction(
         else:
             assignment[key] = "train"
     return assignment
+
+
+def _assign_sessions_per_user(
+    sessions_by_user: dict[str, set[str]],
+    seed: int,
+    val_frac: float,
+    test_frac: float,
+) -> tuple[dict[str, str], list[str]]:
+    """Stratify each user's OWN sessions across train/val/test (SRV-5).
+
+    A global session hash lets whole users strand entirely in test (silently
+    dropped at eval — no enroll prototype) or entirely in train (never queried).
+    Splitting per user guarantees every user with >= 2 sessions has both an
+    enroll (train/val) and a query (test) session.
+
+    Rules, per user with ``k`` sessions:
+
+    * ``k >= 3``: ``n_test = max(1, round(k*test_frac))`` test, ``n_val`` val, the
+      rest train (a shrink loop keeps >= 1 train);
+    * ``k == 2``: 1 train + 1 test (val comes from other users);
+    * ``k == 1``: all train + a ``user_single_session_not_testable`` note (a lone
+      session cannot be both enrolled and queried, and must never sit in test
+      alone — there would be no prototype).
+
+    Args:
+        sessions_by_user: Map user id -> set of that user's session ids.
+        seed: Stable-hash salt (keeps ``(protocol, seed)`` reproducible).
+        val_frac: Target validation fraction per user.
+        test_frac: Target test fraction per user.
+
+    Returns:
+        ``(assignment, notes)`` where assignment maps session id -> split and
+        notes flags single-session users.
+    """
+    assignment: dict[str, str] = {}
+    notes: list[str] = []
+    for user in sorted(sessions_by_user):
+        ordered = sorted(sessions_by_user[user], key=lambda s: (_stable_bucket(s, seed, 1000), s))
+        k = len(ordered)
+        if k == 1:
+            assignment[ordered[0]] = "train"
+            notes.append(f"user_single_session_not_testable:{user}")
+            continue
+        if k == 2:
+            assignment[ordered[0]] = "train"
+            assignment[ordered[1]] = "test"
+            continue
+        n_test = max(1, round(k * test_frac))
+        n_val = max(1, round(k * val_frac))
+        while n_test + n_val >= k:  # keep >= 1 train
+            if n_val > 1:
+                n_val -= 1
+            elif n_test > 1:
+                n_test -= 1
+            else:
+                break
+        for i, session in enumerate(ordered):
+            if i < n_test:
+                assignment[session] = "test"
+            elif i < n_test + n_val:
+                assignment[session] = "val"
+            else:
+                assignment[session] = "train"
+    return assignment, notes
 
 
 def _split_from_group_assignment(
@@ -188,14 +253,17 @@ def leave_session_out(
     val_frac: float = 0.2,
     test_frac: float = 0.2,
 ) -> SplitResult:
-    """Split by session id; a session is wholly in one split.
+    """Split by session id, STRATIFIED PER USER; a session is wholly in one split.
 
     Adjacent overlapping windows share a ``session_id`` and therefore never
-    straddle a split boundary. Because whole sessions move together, per user
-    the enroll (train/val) and query (test) sessions are automatically disjoint.
+    straddle a split boundary. Sessions are partitioned WITHIN each user (SRV-5)
+    so no user strands entirely in test (no enroll prototype -> silently dropped)
+    or entirely in train (never queried); every user with >= 2 sessions gets both
+    an enroll and a query session. Falls back to the legacy global split (with a
+    note) when the table lacks a ``user_id`` column.
 
     Args:
-        windows: Window table with a ``session_id`` column.
+        windows: Window table with ``session_id`` and ``user_id`` columns.
         seed: Deterministic assignment salt.
         val_frac: Fraction of sessions for validation.
         test_frac: Fraction of sessions for test.
@@ -203,10 +271,24 @@ def leave_session_out(
     Returns:
         A :class:`SplitResult` grouped by ``session_id``.
     """
-    assignment = _assign_by_fraction(windows[SESSION_COL].astype(str).tolist(), seed, val_frac, test_frac)
-    return _split_from_group_assignment(
+    if USER_COL not in windows.columns:
+        assignment = _assign_by_fraction(windows[SESSION_COL].astype(str).tolist(), seed, val_frac, test_frac)
+        result = _split_from_group_assignment(
+            windows, windows[SESSION_COL].astype(str), assignment, "leave_session_out", [SESSION_COL]
+        )
+        result.notes.append("leave_session_out_no_user_col_global_fallback")
+        return result
+
+    pairs = windows[[USER_COL, SESSION_COL]].astype(str).drop_duplicates()
+    sessions_by_user: dict[str, set[str]] = {}
+    for user, session in zip(pairs[USER_COL], pairs[SESSION_COL]):
+        sessions_by_user.setdefault(user, set()).add(session)
+    assignment, notes = _assign_sessions_per_user(sessions_by_user, seed, val_frac, test_frac)
+    result = _split_from_group_assignment(
         windows, windows[SESSION_COL].astype(str), assignment, "leave_session_out", [SESSION_COL]
     )
+    result.notes.extend(notes)
+    return result
 
 
 def leave_day_out(
@@ -355,7 +437,17 @@ def combined_day_app(
     buckets = sorted(set(windows[APP_COL].astype(str)))
     # Latest day is the held-out (drift) day; if only one day, reuse it.
     heldout_day = days[-1]
+    single_day = len(days) <= 1
     seen_days = set(days[:-1]) if len(days) > 1 else {days[-1]}
+
+    notes: list[str] = []
+    # On single-day data the day axis CANNOT be held out: this degrades to a pure
+    # leave_app_out. Record it AND drop DAY_COL from group_cols so the builder does
+    # not assert no_day_leak (train and test share the only day) — SRV-16.
+    group_cols = [DAY_COL, APP_COL]
+    if single_day:
+        notes.append("combined_fell_back_to_app_only")
+        group_cols = [APP_COL]
 
     bucket_assign = _assign_by_fraction(buckets, seed, val_frac, test_frac)
     test_buckets = {b for b, s in bucket_assign.items() if s == "test"}
@@ -378,17 +470,26 @@ def combined_day_app(
     train_idx = [int(i) for i in windows.index[split_of == "train"]]
     val_idx = [int(i) for i in windows.index[split_of == "val"]]
     test_idx = [int(i) for i in windows.index[split_of == "test"]]
-    # Fallbacks so downstream never sees an empty val/test on tiny data.
+    # Degenerate-data fallbacks. NEVER borrow a train session into test: one
+    # session in both train and test crashes the leakage assert with an opaque
+    # error. Use val rows for an empty test, else leave test empty + warn. An
+    # empty val may borrow from TRAIN (enroll side only -> no query leak). SRV-16.
     if not test_idx:
-        test_idx = [int(i) for i in windows.index[split_of == "val"]] or train_idx[-1:]
-    if not val_idx:
-        val_idx = test_idx[:1]
+        if val_idx:
+            test_idx, val_idx = val_idx, []
+            notes.append("combined_empty_test_used_val_rows")
+        else:
+            notes.append("combined_empty_test_returned_empty")
+    if not val_idx and train_idx:
+        val_idx = train_idx[-1:]
+        notes.append("combined_empty_val_borrowed_train")
     return SplitResult(
         protocol="combined_day_app",
         train_idx=train_idx,
         val_idx=val_idx,
         test_idx=test_idx,
-        group_cols=[DAY_COL, APP_COL],
+        group_cols=group_cols,
+        notes=notes,
     )
 
 

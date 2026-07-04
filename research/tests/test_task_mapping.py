@@ -89,7 +89,11 @@ def test_preprocess_preserves_raw_task_and_writes_canonical_scene(synthetic_dir:
     input_dir = _write_single_batch(base, tmp_path, task_category="I2", task_name="Discrete taps and controls")
 
     out = tmp_path / "processed"
-    run_preprocess(input_dir, out, window_size_sec=5.0, stride_sec=1.0, feature_mode="ui_sensor")
+    # min_session_seconds=0: this single-batch fixture isolates task mapping, not
+    # the APP-10-B short-session filter (a lone 5s batch spans ~4.99s < 5.0s).
+    run_preprocess(
+        input_dir, out, window_size_sec=5.0, stride_sec=1.0, feature_mode="ui_sensor", min_session_seconds=0.0
+    )
     windows = pd.read_parquet(out / "windows.parquet")
     assert not windows.empty
     assert set(windows["raw_task_category"].dropna()) == {"I2"}
@@ -102,7 +106,11 @@ def test_preprocess_remaps_legacy_i7_to_i6(synthetic_dir: Path, tmp_path: Path) 
     input_dir = _write_single_batch(base, tmp_path, task_category="I7", task_name="Wrist rotation")
 
     out = tmp_path / "processed_i7"
-    run_preprocess(input_dir, out, window_size_sec=5.0, stride_sec=1.0, feature_mode="ui_sensor")
+    # min_session_seconds=0: this single-batch fixture isolates task mapping, not
+    # the APP-10-B short-session filter (a lone 5s batch spans ~4.99s < 5.0s).
+    run_preprocess(
+        input_dir, out, window_size_sec=5.0, stride_sec=1.0, feature_mode="ui_sensor", min_session_seconds=0.0
+    )
     windows = pd.read_parquet(out / "windows.parquet")
     assert not windows.empty
     assert set(windows["raw_task_category"].dropna()) == {"I7"}
@@ -115,7 +123,11 @@ def test_preprocess_drops_legacy_scan_i6_from_gold(synthetic_dir: Path, tmp_path
     input_dir = _write_single_batch(base, tmp_path, task_category="I6", task_name="Scan, frame, and capture")
 
     out = tmp_path / "processed_scan"
-    run_preprocess(input_dir, out, window_size_sec=5.0, stride_sec=1.0, feature_mode="ui_sensor")
+    # min_session_seconds=0: this single-batch fixture isolates task mapping, not
+    # the APP-10-B short-session filter (a lone 5s batch spans ~4.99s < 5.0s).
+    run_preprocess(
+        input_dir, out, window_size_sec=5.0, stride_sec=1.0, feature_mode="ui_sensor", min_session_seconds=0.0
+    )
     windows = pd.read_parquet(out / "windows.parquet")
     assert not windows.empty
     assert set(windows["raw_task_category"].dropna()) == {"I6"}

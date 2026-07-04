@@ -28,20 +28,29 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import torch
 import yaml
 
 from research import SCENARIOS
-from research.config import config_hash, load_config
+from research.config import _read_yaml, config_hash, deep_merge, load_config
 from research.experiments._data import DatasetBundle
-from research.experiments.bootstrap import bootstrap_ci, paired_delta
+from research.experiments.bootstrap import (
+    bootstrap_ci,
+    holm_correction,
+    paired_delta,
+    pooled_bootstrap_ci,
+    pooled_paired_delta,
+)
+from research.experiments.detection import DETECTION_GRID, select_detection_policy, stream_event_metrics
 from research.experiments.evaluator import EvalResult, evaluate
 from research.experiments.metrics import (
     compute_eer_auc,
-    false_alarms_per_hour,
+    far_at_frr,
+    far_frr_at_threshold,
+    frr_at_far,
     per_scene_eer,
     per_user_eer,
-    time_to_detect,
 )
 from research.experiments.trainer import build_model, train_model
 from research.models.moe import MoEAuthenticator
@@ -175,26 +184,57 @@ def _forward_any(model: torch.nn.Module, features: torch.Tensor, weak: torch.Ten
 # --- single run -------------------------------------------------------------
 
 
-def _metrics_payload(result: EvalResult, seed: int, stride_sec: float) -> dict[str, Any]:
+def _metrics_payload(
+    result: EvalResult,
+    val_result: EvalResult | None,
+    seed: int,
+    stride_sec: float,
+    *,
+    n_boot: int = 1000,
+) -> dict[str, Any]:
     """Compute the full metrics.json payload from an evaluation result.
 
     Args:
-        result: The evaluation result (pooled scores/labels/users/scenes).
-        seed: The run seed (drives the deterministic bootstrap).
+        result: The test evaluation result (pooled scores/labels/users/scenes).
+        val_result: The validation evaluation result — supplies the FROZEN
+            decision threshold + detection-policy selection (§9.7). ``None`` falls
+            back to the test EER threshold with the raw policy.
+        seed: The run seed (drives the deterministic bootstrap / resampling).
         stride_sec: Window stride (seconds) for the event-level metrics.
+        n_boot: Bootstrap replicates for the §18.3 pooled CI.
 
     Returns:
-        The metrics dict (EER/AUC family, by-user bootstrap CI, per-user/per-scene
-        maps, event-level metrics, routing diagnostics, pair counts).
+        The metrics dict (EER/AUC family, PRIMARY pooled-bootstrap CI + secondary
+        by-user CI, §9.7 operating points, val-selected detection policy +
+        streaming event metrics, per-user/per-scene maps, routing diagnostics,
+        coverage counters, pair counts).
     """
     eer_auc = compute_eer_auc(result.labels, result.scores)
     thr = eer_auc["threshold"]
     per_user = per_user_eer(result.labels, result.scores, result.users)
     per_scene = per_scene_eer(result.labels, result.scores, result.scenes)
+
+    # SRV-3 PRIMARY: pooled-metric bootstrap CI (resample users -> rebuild pairs ->
+    # recompute pooled EER). Secondary: the legacy by-user vector CI (retained).
+    pooled = pooled_bootstrap_ci(result.labels, result.scores, result.users, n_boot=n_boot, seed=seed)
     boot_mean, boot_lo, boot_hi = bootstrap_ci(list(per_user.values()), seed=seed)
 
-    ttd = time_to_detect(result.labels, result.scores, thr, stride_sec) if np.isfinite(thr) else float("nan")
-    fa_per_hour = false_alarms_per_hour(result.labels, result.scores, thr, stride_sec) if np.isfinite(thr) else float("nan")
+    # SRV-4 §9.7 operating points (conservative ROC step口径).
+    frr_far_1 = frr_at_far(result.labels, result.scores, 0.01)
+    frr_far_5 = frr_at_far(result.labels, result.scores, 0.05)
+    far_frr_5 = far_at_frr(result.labels, result.scores, 0.05)
+    far_thr, frr_thr = far_frr_at_threshold(result.labels, result.scores, thr) if np.isfinite(thr) else (float("nan"), float("nan"))
+    far_resolution = (1.0 / result.n_impostor) if result.n_impostor > 0 else float("nan")
+
+    # SRV-4 detection: select the policy on VALIDATION (val EER threshold), freeze
+    # it, and evaluate the streaming event metrics ONCE on test with that threshold.
+    if val_result is not None and val_result.scores.size:
+        val_thr = compute_eer_auc(val_result.labels, val_result.scores)["threshold"]
+        detection_policy = select_detection_policy(val_result, val_thr, stride_sec)
+    else:
+        detection_policy = {"kind": "raw", "params": {}, "threshold": thr, "selected_on": "test_fallback"}
+    decision_thr = detection_policy["threshold"]
+    event = stream_event_metrics(result, decision_thr, {"kind": detection_policy["kind"], **detection_policy["params"]}, stride_sec)
 
     router_entropy = float("nan")
     util_entropy = float("nan")
@@ -213,20 +253,64 @@ def _metrics_payload(result: EvalResult, seed: int, stride_sec: float) -> dict[s
         "roc_auc": eer_auc["roc_auc"],
         "pr_auc": eer_auc["pr_auc"],
         "eer_threshold": thr,
+        "eer_pooled_bootstrap": pooled,
         "eer_by_user_bootstrap": {"mean": boot_mean, "ci_lo": boot_lo, "ci_hi": boot_hi},
         "matched_impostor_eer": eer_auc["eer"],
         "per_user_eer": per_user,
         "per_scene_eer": per_scene,
-        "time_to_detect_sec": ttd,
-        "false_alarms_per_hour": fa_per_hour,
+        "frr_at_far_1pct": frr_far_1,
+        "frr_at_far_5pct": frr_far_5,
+        "far_at_frr_5pct": far_frr_5,
+        "far_at_threshold": far_thr,
+        "frr_at_threshold": frr_thr,
+        "far_resolution": far_resolution,
+        "detection_policy": detection_policy,
+        "attack_detection_rate": event["attack_detection_rate"],
+        "time_to_detect_sec": event["time_to_detect_sec"],
+        "false_alarms_per_hour": event["false_alarms_per_hour"],
         "n_genuine_pairs": result.n_genuine,
         "n_impostor_pairs": result.n_impostor,
+        "n_test_users": result.n_test_users,
+        "n_evaluated_users": result.n_evaluated_users,
+        "dropped_users_no_enroll": result.dropped_users_no_enroll,
+        "n_skipped_impostor_pairs_no_enroll": result.n_skipped_impostor_pairs_no_enroll,
         "active_experts": result.active_experts,
         "router_entropy": router_entropy,
         "expert_utilization_entropy": util_entropy,
         "router_probs_mean": result.router_probs_mean,
         "expert_utilization": result.expert_utilization,
     }
+
+
+def _scores_frame(result: EvalResult) -> pd.DataFrame:
+    """Per-pair scores frame for post-hoc ROC / CI recompute (SRV-4). Pseudonymous."""
+    n = int(np.asarray(result.scores).size)
+    return pd.DataFrame(
+        {
+            "score": np.asarray(result.scores, dtype=float),
+            "label": np.asarray(result.labels, dtype=int),
+            "attacked_user": list(result.users) if result.users else [""] * n,
+            "impostor_user": list(result.impostor_user_ids) if result.impostor_user_ids else [""] * n,
+            "scene": list(result.scenes) if result.scenes else [""] * n,
+            "query_window_id": list(result.query_window_ids) if result.query_window_ids else [""] * n,
+            "session_id": list(result.session_ids) if result.session_ids else [""] * n,
+        }
+    )
+
+
+def _roc_points(result: EvalResult, max_points: int = 512) -> list[dict[str, float]]:
+    """Down-sampled ROC vertices (fpr,tpr) for a faithful ROC redraw (SRV-4)."""
+    labels = np.asarray(result.labels)
+    scores = np.asarray(result.scores, dtype=float)
+    if len(np.unique(labels)) < 2 or scores.size < 2:
+        return []
+    from sklearn.metrics import roc_curve
+
+    fpr, tpr, _ = roc_curve(labels, scores)
+    if fpr.size > max_points:
+        idx = np.linspace(0, fpr.size - 1, max_points).round().astype(int)
+        fpr, tpr = fpr[idx], tpr[idx]
+    return [{"fpr": float(a), "tpr": float(b)} for a, b in zip(fpr, tpr)]
 
 
 def run_experiment(cfg: dict[str, Any], data_dir: str | Path, out_dir: str | Path, *, tag: str | None = None) -> Path:
@@ -256,11 +340,17 @@ def run_experiment(cfg: dict[str, Any], data_dir: str | Path, out_dir: str | Pat
     torch.save(model.state_dict(), run_dir / "model.pt")
 
     result = evaluate(model, bundle, data_dir)
+    # VAL result (frozen decision threshold + detection-policy selection, §9.7).
+    val_result, _val_matching = _evaluate_on_split(model, bundle, data_dir, "val", seed=seed)
     stride_sec = float(cfg.get("preprocess", {}).get("stride_sec", 1))
-    metrics = _metrics_payload(result, seed, stride_sec)
+    n_boot = int(cfg.get("stats", {}).get("n_boot", 1000))
+    metrics = _metrics_payload(result, val_result, seed, stride_sec, n_boot=n_boot)
     metrics["param_count"] = history.get("param_count")
     metrics["active_param_count"] = history.get("active_param_count", history.get("param_count"))
     metrics["best_epoch"] = history.get("best_epoch")
+    metrics["epochs_configured"] = history.get("epochs_configured")
+    metrics["epochs_run"] = history.get("epochs_run")
+    metrics["early_stopped"] = history.get("early_stopped")
     metrics["tag"] = tag
     metrics["model_kind"] = str(cfg.get("model", {}).get("kind"))
     metrics["router"] = str(cfg.get("model", {}).get("router")) if cfg.get("model", {}).get("kind") == "moe" else "dense"
@@ -270,7 +360,24 @@ def run_experiment(cfg: dict[str, Any], data_dir: str | Path, out_dir: str | Pat
     # metrics.json
     (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, sort_keys=True, default=str), encoding="utf-8")
 
-    # metrics.csv (one flat row of the headline scalars).
+    # Per-pair scores (SRV-3/SRV-4): faithful ROC redraw, pooled-bootstrap CI, and
+    # cross-run same-index paired deltas all need the raw scores persisted. These
+    # are pseudonymous (user_id / window_id / scene only — no text), same
+    # sensitivity as per_user_metrics.csv.
+    _scores_frame(result).to_parquet(run_dir / "scores.parquet", index=False)
+    if val_result is not None:
+        _scores_frame(val_result).to_parquet(run_dir / "scores_val.parquet", index=False)
+    # SRV-3 pair_scores.parquet (the §18.3 delta reads these columns).
+    _scores_frame(result)[["attacked_user", "scene", "label", "score"]].rename(
+        columns={"attacked_user": "user_id"}
+    ).to_parquet(run_dir / "pair_scores.parquet", index=False)
+    _write_csv(run_dir / "roc_points.csv", _roc_points(result))
+
+    # metrics.csv (one flat row of the headline scalars). The eer_ci_* columns now
+    # carry the PRIMARY pooled-bootstrap CI (aligned with the pooled EER on the
+    # same row); the legacy by-user CI is kept in the eer_by_user_ci_* columns.
+    pooled = metrics["eer_pooled_bootstrap"]
+    by_user = metrics["eer_by_user_bootstrap"]
     flat = {
         "run_id": run_id,
         "tag": tag or "",
@@ -281,13 +388,22 @@ def run_experiment(cfg: dict[str, Any], data_dir: str | Path, out_dir: str | Pat
         "eer": metrics["eer"],
         "roc_auc": metrics["roc_auc"],
         "pr_auc": metrics["pr_auc"],
-        "eer_ci_lo": metrics["eer_by_user_bootstrap"]["ci_lo"],
-        "eer_ci_hi": metrics["eer_by_user_bootstrap"]["ci_hi"],
+        "eer_ci_lo": pooled["ci_lo"],
+        "eer_ci_hi": pooled["ci_hi"],
+        "eer_by_user_ci_lo": by_user["ci_lo"],
+        "eer_by_user_ci_hi": by_user["ci_hi"],
         "matched_impostor_eer": metrics["matched_impostor_eer"],
+        "frr_at_far_1pct": metrics["frr_at_far_1pct"],
+        "frr_at_far_5pct": metrics["frr_at_far_5pct"],
+        "far_at_frr_5pct": metrics["far_at_frr_5pct"],
+        "attack_detection_rate": metrics["attack_detection_rate"],
         "time_to_detect_sec": metrics["time_to_detect_sec"],
         "false_alarms_per_hour": metrics["false_alarms_per_hour"],
         "n_genuine_pairs": metrics["n_genuine_pairs"],
         "n_impostor_pairs": metrics["n_impostor_pairs"],
+        "n_evaluated_users": metrics["n_evaluated_users"],
+        "epochs_run": metrics.get("epochs_run"),
+        "early_stopped": metrics.get("early_stopped"),
         "param_count": metrics["param_count"],
         "active_experts": metrics["active_experts"],
     }
@@ -365,100 +481,162 @@ def _eval_for_topk(cfg: dict[str, Any], data_dir: str | Path, k: int, split_for_
     bundle = DatasetBundle(data_dir)
     model, history = train_model(k_cfg, bundle, scratch_dir / f"k{k}")
 
-    result = _evaluate_on_split(model, bundle, data_dir, split_for_eer)
+    result, val_matching = _evaluate_on_split(model, bundle, data_dir, split_for_eer, seed=seed)
     eer_auc = compute_eer_auc(result.labels, result.scores)
     per_user = per_user_eer(result.labels, result.scores, result.users)
     per_scene = per_scene_eer(result.labels, result.scores, result.scenes)
     latency = _measure_latency_ms(model, bundle)
+    # SRV-6: when the val impostors are a loose (non-scene-matched) fallback, do
+    # NOT report the EER in the matched-impostor column — it is not matched.
+    matched_impostor = eer_auc["eer"] if val_matching != "loose_fallback" else float("nan")
     return {
         "k": int(k),
         "eer": eer_auc["eer"],
         "roc_auc": eer_auc["roc_auc"],
         "per_scene_eer": ";".join(f"{s}:{per_scene.get(s, float('nan')):.4f}" for s in SCENARIOS),
-        "matched_impostor_eer": eer_auc["eer"],
+        "matched_impostor_eer": matched_impostor,
         "avg_active_experts": float(k),
         "latency_ms": latency,
         "param_count": int(history.get("param_count", 0)),
         "active_param_count": int(history.get("active_param_count", history.get("param_count", 0))),
         "_per_user_eer": per_user,
+        "_val_impostor_matching": val_matching,
     }
 
 
-def _evaluate_on_split(model: torch.nn.Module, bundle: DatasetBundle, data_dir: str | Path, split: str) -> EvalResult:
+def _evaluate_on_split(
+    model: torch.nn.Module, bundle: DatasetBundle, data_dir: str | Path, split: str, *, seed: int = 42
+) -> tuple[EvalResult, str]:
     """Evaluate scoring the given split's windows as the genuine queries.
 
-    For ``split == "test"`` this is the standard :func:`evaluate`. For
-    ``split == "val"`` the val windows are scored against each user's TRAIN
-    prototype (train/val sessions are disjoint under leave-session-out), giving a
-    frozen k*-selection EER that never touches the test split.
+    For ``split == "test"`` this is the standard :func:`evaluate` (matching
+    ``"test"``). For ``split == "val"`` the val windows are scored against each
+    user's TRAIN prototype (train/val sessions are disjoint), giving a frozen
+    k*-selection / detection-threshold EER that never touches the test split.
 
     Args:
         model: The trained model.
         bundle: The dataset bundle.
         data_dir: The dataset directory.
         split: ``"val"`` or ``"test"``.
+        seed: Deterministic seed for the val matched-impostor sampling.
 
     Returns:
-        The evaluation result for that split.
+        ``(EvalResult, matching)`` where ``matching`` is ``"test"``, ``"matched"``
+        or ``"loose_fallback"`` (the val impostor provenance).
     """
     if split == "test":
-        return evaluate(model, bundle, data_dir)
-    return _evaluate_val(model, bundle)
+        return evaluate(model, bundle, data_dir), "test"
+    return _evaluate_val(model, bundle, seed=seed)
 
 
-def _evaluate_val(model: torch.nn.Module, bundle: DatasetBundle) -> EvalResult:
-    """Prototype/cosine EER on the VAL split (queries=val, enroll=train).
+def _evaluate_val(model: torch.nn.Module, bundle: DatasetBundle, *, seed: int = 42) -> tuple[EvalResult, str]:
+    """Prototype/cosine EER on the VAL split (queries=val, enroll=train), SRV-6.
 
-    Genuine = val window vs own train prototype (sessions disjoint). Impostor =
-    every OTHER user's val window vs the attacked user's train prototype (matched
-    loosely by being cross-user; scene taken from the impostor window's weak
-    label). Used only for the frozen k* selection.
+    Genuine = each val window vs its own train prototype (sessions disjoint).
+    Impostor = SCENE-MATCHED cross-user val windows (same construction as the test
+    impostor pairs) vs the attacked user's train prototype, drawn from the VAL pool
+    only. When no scene-matched cross-user pair exists (e.g. a single-user or
+    single-scene val split) it falls back to the loose "every other user's window"
+    method and reports ``"loose_fallback"`` so the provenance is explicit.
 
     Args:
         model: The trained model.
         bundle: The dataset bundle.
+        seed: Deterministic seed for the matched-impostor sampling.
 
     Returns:
-        The val-split evaluation result.
+        ``(EvalResult, matching)`` — ``matching`` is ``"matched"`` or
+        ``"loose_fallback"`` (``"empty"`` when a split is empty).
     """
     from research.experiments.evaluator import _embed_all, _prototypes, _cosine  # local import to reuse helpers
+    from research.datasets.impostors import sample_matched_impostors
+    from research.datasets.splits import SESSION_COL, USER_COL, WINDOW_COL
 
+    active = float(getattr(model, "top_k", 0.0))
     train_emb, train_meta = _embed_all(model, bundle, "train")
     val_emb, val_meta = _embed_all(model, bundle, "val")
     if val_emb.shape[0] == 0 or train_emb.shape[0] == 0:
-        return EvalResult(np.empty(0), np.empty(0), [], [], 0, 0, active_experts=float(getattr(model, "top_k", 0.0)))
+        return EvalResult(np.empty(0), np.empty(0), [], [], 0, 0, active_experts=active), "empty"
     protos = _prototypes(train_emb, train_meta)
+
+    val_users = val_meta[USER_COL].astype(str).tolist()
+    val_wins = val_meta[WINDOW_COL].astype(str).tolist() if WINDOW_COL in val_meta else [""] * len(val_meta)
+    val_sessions = val_meta[SESSION_COL].astype(str).tolist() if SESSION_COL in val_meta else [""] * len(val_meta)
+    val_scenes = val_meta["weak_label_top1"].astype(str).tolist() if "weak_label_top1" in val_meta else [SCENARIOS[0]] * len(val_meta)
+    win_to_row = {w: i for i, w in enumerate(val_wins)}
 
     scores: list[float] = []
     labels: list[int] = []
     users: list[str] = []
     scenes: list[str] = []
-    val_users = val_meta["user_id"].astype(str).tolist()
-    val_scenes = val_meta["weak_label_top1"].astype(str).tolist() if "weak_label_top1" in val_meta else [SCENARIOS[0]] * len(val_meta)
+    qwins: list[str] = []
+    imp_users: list[str] = []
+    sess: list[str] = []
+
+    # Genuine: each val window vs its own train prototype.
     for row in range(val_emb.shape[0]):
         user = val_users[row]
-        if user in protos:  # genuine
-            scores.append(_cosine(val_emb[row], protos[user]))
-            labels.append(1)
-            users.append(user)
-            scenes.append(val_scenes[row])
-        # impostor: score this val window against every OTHER user's prototype
-        for other, proto in protos.items():
-            if other == user:
+        proto = protos.get(user)
+        if proto is None:
+            continue
+        scores.append(_cosine(val_emb[row], proto))
+        labels.append(1)
+        users.append(user)
+        scenes.append(val_scenes[row])
+        qwins.append(val_wins[row])
+        imp_users.append("")
+        sess.append(val_sessions[row])
+
+    # Impostor: scene-matched cross-user val windows (SRV-6), else loose fallback.
+    val_frame = bundle.raw_frame("val").reset_index(drop=True)
+    pairs = (
+        sample_matched_impostors(val_frame, genuine_idx=list(val_frame.index), pool_idx=list(val_frame.index), seed=seed, n_per_genuine=1)
+        if not val_frame.empty
+        else None
+    )
+    matching = "matched"
+    if pairs is not None and len(pairs) > 0:
+        for attacked, iwin, iuser, scn in zip(pairs.genuine_user_ids, pairs.impostor_window_ids, pairs.impostor_user_ids, pairs.scene):
+            proto = protos.get(str(attacked))
+            irow = win_to_row.get(str(iwin))
+            if proto is None or irow is None:
                 continue
-            scores.append(_cosine(val_emb[row], proto))
+            scores.append(_cosine(val_emb[irow], proto))
             labels.append(0)
-            users.append(other)
-            scenes.append(val_scenes[row])
-    return EvalResult(
+            users.append(str(attacked))
+            scenes.append(str(scn))
+            qwins.append(str(iwin))
+            imp_users.append(str(iuser))
+            sess.append(val_sessions[irow])
+    else:
+        matching = "loose_fallback"
+        for row in range(val_emb.shape[0]):
+            user = val_users[row]
+            for other, proto in protos.items():
+                if other == user:
+                    continue
+                scores.append(_cosine(val_emb[row], proto))
+                labels.append(0)
+                users.append(other)
+                scenes.append(val_scenes[row])
+                qwins.append(val_wins[row])
+                imp_users.append(user)
+                sess.append(val_sessions[row])
+
+    result = EvalResult(
         scores=np.asarray(scores, dtype=float),
         labels=np.asarray(labels, dtype=int),
         users=users,
         scenes=scenes,
         n_genuine=int(sum(1 for lbl in labels if lbl == 1)),
         n_impostor=int(sum(1 for lbl in labels if lbl == 0)),
-        active_experts=float(getattr(model, "top_k", 0.0)),
+        query_window_ids=qwins,
+        impostor_user_ids=imp_users,
+        session_ids=sess,
+        active_experts=active,
     )
+    return result, matching
 
 
 def _deep_override(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -495,6 +673,7 @@ def _write_feature_manifest(
     *,
     feature_mode: str,
     source_manifest: dict[str, Any] | None = None,
+    privacy_transform: dict[str, Any] | None = None,
 ) -> None:
     """Write a feature manifest for a dataset view.
 
@@ -503,6 +682,8 @@ def _write_feature_manifest(
         feature_columns: Active ordered feature columns.
         feature_mode: Label for the feature mode / ablation view.
         source_manifest: Optional source manifest to preserve ancillary fields.
+        privacy_transform: Optional value-transform record (SRV-10) — the
+            quantization / dropped columns applied to coarsen the view.
     """
     manifest = dict(source_manifest or {})
     manifest.update(
@@ -514,6 +695,8 @@ def _write_feature_manifest(
             "leakage_free": True,
         }
     )
+    if privacy_transform:
+        manifest["privacy_transform"] = privacy_transform
     (dataset_dir / "feature_manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True, default=str), encoding="utf-8"
     )
@@ -527,14 +710,19 @@ def _dataset_view(
     feature_mode: str | None = None,
     drop_columns: list[str] | None = None,
     drop_prefixes: list[str] | None = None,
+    quantize: dict[str, float] | None = None,
     seed: int = 42,
 ) -> Path:
-    """Create a lightweight dataset view for feature / sensor-channel ablations.
+    """Create a dataset view for feature / sensor-channel / privacy ablations.
 
-    Feature-family and sensor-channel ablations only need a different
-    ``feature_manifest.json``; the split parquet files are hard-linked. (The old
-    8->7 mapping ablation was removed with the C0..C6 taxonomy — the scene space
-    is now the identity ``I0..I6``, so no alternate mapping exists.)
+    Column-subset views (feature-family, sensor-channel, ``drop_columns``) only
+    need a reduced ``feature_manifest.json``; the split parquets are hard-linked.
+    A ``quantize`` mapping (column -> step) makes the view a REAL value transform
+    (SRV-10 privacy coarsening): the affected split parquets are read, the listed
+    columns are rounded to the given step, and rewritten (never hard-linked), so
+    the privacy levels differ in data, not just in a label. (The old 8->7 mapping
+    ablation was removed with the C0..C6 taxonomy — the scene space is the
+    identity ``I0..I6``, so no alternate mapping exists.)
 
     Args:
         source_dir: Existing dataset directory.
@@ -543,6 +731,7 @@ def _dataset_view(
         feature_mode: Optional feature mode whose columns become active.
         drop_columns: Exact feature columns to drop.
         drop_prefixes: Feature-column prefixes to drop.
+        quantize: Optional ``{column: step}`` value-quantization (privacy views).
         seed: Deterministic impostor resampling seed (unused here; kept for
             call-site symmetry with the ablation suites).
 
@@ -573,7 +762,13 @@ def _dataset_view(
     if not columns:
         raise ValueError(f"dataset view {name!r} would have zero active feature columns")
 
-    _write_feature_manifest(view, columns, feature_mode=mode_label, source_manifest=src_manifest)
+    quant = {c: float(s) for c, s in (quantize or {}).items() if s and float(s) > 0}
+    privacy_transform: dict[str, Any] | None = None
+    if quant or drop_set:
+        privacy_transform = {"quantize": quant, "drop_columns": sorted(drop_set)}
+        mode_label = f"{mode_label}__quant_" + "_".join(sorted(quant)) if quant else mode_label
+
+    _write_feature_manifest(view, columns, feature_mode=mode_label, source_manifest=src_manifest, privacy_transform=privacy_transform)
 
     src_split_manifest = source / "split_manifest.json"
     split_manifest = json.loads(src_split_manifest.read_text(encoding="utf-8")) if src_split_manifest.exists() else {}
@@ -585,10 +780,20 @@ def _dataset_view(
             "input_dim": len(columns),
         }
     )
+    if privacy_transform:
+        split_manifest["privacy_transform"] = privacy_transform
 
     for filename in ("train.parquet", "val.parquet", "test.parquet", "impostor_pairs.parquet"):
         src = source / filename
-        if src.exists():
+        if not src.exists():
+            continue
+        if quant and filename != "impostor_pairs.parquet":
+            frame = pd.read_parquet(src)
+            for col, step in quant.items():
+                if col in frame.columns:
+                    frame[col] = np.round(frame[col].astype(float) / step) * step
+            frame.to_parquet(view / filename, index=False)
+        else:
             _link_or_copy(src, view / filename)
 
     (view / "split_manifest.json").write_text(
@@ -621,9 +826,14 @@ def run_topk_sweep(cfg: dict[str, Any], data_dir: str | Path, out_dir: str | Pat
     scratch_dir = out / "_topk_scratch"
     rows: list[dict[str, Any]] = []
     per_user_by_k: dict[int, dict[str, float]] = {}
+    val_impostor_matching = "matched"
     for k in ks:
         row = _eval_for_topk(cfg, data_dir, int(k), select_on, scratch_dir)
         per_user_by_k[int(k)] = row.pop("_per_user_eer")
+        # Provenance is data-determined (identical across k); keep a loose flag if any k fell back.
+        matching = row.pop("_val_impostor_matching", "matched")
+        if matching == "loose_fallback":
+            val_impostor_matching = "loose_fallback"
         rows.append(row)
 
     _write_csv(out / "topk_sweep.csv", rows)
@@ -633,7 +843,10 @@ def run_topk_sweep(cfg: dict[str, Any], data_dir: str | Path, out_dir: str | Pat
     shutil.rmtree(scratch_dir, ignore_errors=True)
 
     kstar, provenance = select_kstar_pareto(rows, per_user_by_k, seed=int(cfg.get("seed", 42)))
-    (out / "topk_kstar.json").write_text(json.dumps({"kstar": kstar, **provenance}, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    (out / "topk_kstar.json").write_text(
+        json.dumps({"kstar": kstar, "val_impostor_matching": val_impostor_matching, **provenance}, indent=2, sort_keys=True, default=str),
+        encoding="utf-8",
+    )
     LOGGER.info("top-k sweep done: k*=%s (selected on %s)", kstar, select_on)
     return out / "topk_sweep.csv"
 
@@ -717,7 +930,11 @@ def _resolve_experiment_cfg(base_cfg: dict[str, Any], name: str, kstar: int, con
     """
     yaml_path = (configs_dir / f"{name}.yaml") if configs_dir else None
     if yaml_path and yaml_path.exists():
-        cfg = load_config(yaml_path)
+        # SRV-9: deep-merge the baseline's thin yaml override ONTO the caller's
+        # base_cfg (not a fresh default-only load). When base_cfg is the pure
+        # default this is byte-for-byte identical to load_config(yaml_path); when
+        # the caller passed --config / --smoke overrides, those now reach M0..M10.
+        cfg = deep_merge(base_cfg, _read_yaml(yaml_path))
     else:
         cfg = _deep_override(base_cfg, M_OVERRIDES[name])
     # Resolve the k* sentinel wherever it appears in the model block.
@@ -798,15 +1015,26 @@ def _run_ablation_suites(cfg: dict[str, Any], data_dir: str | Path, out_dir: str
     _write_csv(out / "feature_ablation.csv", feature_rows)
     manifest["feature"] = {"csv": str(out / "feature_ablation.csv"), "runs": feature_rows}
 
+    # SRV-10: three GENUINELY-DIFFERENT privacy levels (was a no-op — all three
+    # mapped to the same column set). All share the base ui_sensor_no_package mode
+    # (resource id is a leakage column, always excluded); they diverge by real
+    # value coarsening / column subsetting so the RQ7 privacy-utility trade-off is
+    # measurable rather than training noise.
+    ui_cols = [c for c in build_feature_columns("ui_sensor_no_package") if c.startswith("ui_")]
+    ui_category_keep = {"ui_webview", "ui_list", "ui_form_like_control_count", "ui_treediff_categoryl1"}
+    ui_category_drop = [c for c in ui_cols if c not in ui_category_keep]
     privacy_specs = [
-        ("privacy_coarse_bounds", "privacy_coarse_ui"),
-        ("no_resource_id", "ui_sensor_no_package"),
-        ("coarse_widget_category_only", "privacy_coarse_ui"),
+        # coarse bounds: quantize bounds occupancy to 4 levels + drop the bounds tree-diff.
+        ("privacy_coarse_bounds", "ui_sensor_no_package", {"quantize": {"ui_bounds_occupancy": 0.25}, "drop_columns": ["ui_treediff_boundsl1"]}),
+        # explicit baseline: full ui_sensor_no_package (no coarsening) — the reference level.
+        ("no_resource_id", "ui_sensor_no_package", {}),
+        # strictest: keep ONLY the pure widget-category-derived UI columns (+ IMU/event).
+        ("coarse_widget_category_only", "ui_sensor_no_package", {"drop_columns": ui_category_drop}),
     ]
     privacy_rows: list[dict[str, Any]] = []
-    for name, mode in privacy_specs:
+    for name, mode, view_kwargs in privacy_specs:
         try:
-            view = _dataset_view(data, view_root, f"privacy__{name}", feature_mode=mode, seed=seed)
+            view = _dataset_view(data, view_root, f"privacy__{name}", feature_mode=mode, seed=seed, **view_kwargs)
             run_dir = run_experiment(
                 _formal_m7_cfg(cfg, kstar, {"features": {"mode": mode}}),
                 view,
@@ -819,6 +1047,25 @@ def _run_ablation_suites(cfg: dict[str, Any], data_dir: str | Path, out_dir: str
             LOGGER.warning("privacy ablation %s failed: %s", name, exc)
     _write_csv(out / "privacy_ablation.csv", privacy_rows)
     manifest["privacy"] = {"csv": str(out / "privacy_ablation.csv"), "runs": privacy_rows}
+
+    # SRV-10 §9.5: weak-label confidence-threshold ablation (was never implemented).
+    # KL router supervision is hard-gated below each threshold (identity/L_auth is
+    # untouched); runs the formal M7 on the source data (no dataset view needed).
+    confidence_rows: list[dict[str, Any]] = []
+    for thr in (0.0, 0.2, 0.4, 0.6):
+        try:
+            run_dir = run_experiment(
+                _formal_m7_cfg(cfg, kstar, {"loss": {"weak_conf_threshold": float(thr)}}),
+                data,
+                out,
+                tag=f"ablation_confidence_{thr:.1f}",
+            )
+            confidence_rows.append(_ablation_metric_row("confidence", f"thr_{thr:.1f}", run_dir, {"confidence_threshold": float(thr)}))
+        except Exception as exc:  # pragma: no cover
+            confidence_rows.append({"ablation_kind": "confidence", "name": f"thr_{thr:.1f}", "confidence_threshold": float(thr), "error": str(exc)})
+            LOGGER.warning("confidence ablation thr=%.1f failed: %s", thr, exc)
+    _write_csv(out / "confidence_ablation.csv", confidence_rows)
+    manifest["confidence"] = {"csv": str(out / "confidence_ablation.csv"), "runs": confidence_rows}
 
     # NOTE: the 8->7 task-mapping ablation was removed with the C0..C6 taxonomy.
     # The scene space is now the identity I0..I6, so there is no alternate mapping
@@ -841,6 +1088,74 @@ def _run_ablation_suites(cfg: dict[str, Any], data_dir: str | Path, out_dir: str
     _write_csv(out / "sensor_channel_ablation.csv", sensor_rows)
     manifest["sensor_channel"] = {"csv": str(out / "sensor_channel_ablation.csv"), "runs": sensor_rows}
     return manifest
+
+
+def _paired_delta_statistics(out: Path, index: dict[str, Any], *, seed: int = 42, n_boot: int = 1000) -> Path | None:
+    """Write ``paired_deltas.csv``: M7-vs-baseline deltas + Holm family correction.
+
+    For each baseline the same-replicate POOLED EER delta (§18.3, positive ==
+    M7 lower EER) is computed on the SHARED users with one
+    :func:`~research.experiments.bootstrap.user_resample_indices` matrix, and the
+    per-user Wilcoxon/sign paired test supplies the p-value family that
+    :func:`~research.experiments.bootstrap.holm_correction` adjusts.
+
+    Args:
+        out: Results root.
+        index: The populated runs index (``runs`` -> per-baseline ``run_dir``).
+        seed: Deterministic resampling seed.
+        n_boot: Bootstrap replicates for the pooled delta CI.
+
+    Returns:
+        The ``paired_deltas.csv`` path, or ``None`` when M7's pair scores are absent.
+    """
+    runs = index.get("runs", {})
+    m7 = runs.get("m7", {})
+    m7_dir = Path(m7["run_dir"]) if m7.get("run_dir") else None
+    if m7_dir is None or not (m7_dir / "pair_scores.parquet").exists():
+        return None
+    m7_ps = pd.read_parquet(m7_dir / "pair_scores.parquet")
+    m7_pu = json.loads((m7_dir / "metrics.json").read_text(encoding="utf-8")).get("per_user_eer", {})
+
+    rows: list[dict[str, Any]] = []
+    pvals: list[float] = []
+    for name in [f"m{i}" for i in range(11)]:
+        if name == "m7" or name not in runs or not runs[name].get("run_dir"):
+            continue
+        bdir = Path(runs[name]["run_dir"])
+        ps_path = bdir / "pair_scores.parquet"
+        if not ps_path.exists():
+            continue
+        b_ps = pd.read_parquet(ps_path)
+        pooled = pooled_paired_delta(
+            m7_ps["label"], m7_ps["score"], m7_ps["user_id"],
+            b_ps["label"], b_ps["score"], b_ps["user_id"],
+            n_boot=n_boot, seed=seed,
+        )
+        b_pu = json.loads((bdir / "metrics.json").read_text(encoding="utf-8")).get("per_user_eer", {})
+        shared = sorted(set(m7_pu) & set(b_pu))
+        # A=baseline, B=m7 so delta_mean = baseline - m7 (positive == M7 better),
+        # matching the pooled convention; the two-sided p-value is sign-agnostic.
+        pud = paired_delta([b_pu[u] for u in shared], [m7_pu[u] for u in shared], seed=seed)
+        p = float(pud.get("p_value", float("nan")))
+        pvals.append(p)
+        rows.append({
+            "baseline": name,
+            "label": M_LABELS.get(name, name),
+            "pooled_delta_mean": pooled["delta_mean"],
+            "pooled_ci_lo": pooled["ci_lo"],
+            "pooled_ci_hi": pooled["ci_hi"],
+            "n_shared_users": pooled["n_shared_users"],
+            "per_user_delta_mean": pud.get("delta_mean"),
+            "per_user_p_value": p,
+            "test": pud.get("test"),
+            "win_rate_m7": pud.get("win_rate"),
+            "cohens_d": pud.get("cohens_d"),
+        })
+    adjusted = holm_correction(pvals) if pvals else []
+    for row, adj in zip(rows, adjusted):
+        row["p_value_holm"] = float(adj)
+    _write_csv(out / "paired_deltas.csv", rows)
+    return out / "paired_deltas.csv"
 
 
 def run_all_experiments(cfg: dict[str, Any], data_dir: str | Path, out_dir: str | Path) -> Path:
@@ -889,6 +1204,13 @@ def run_all_experiments(cfg: dict[str, Any], data_dir: str | Path, out_dir: str 
         except Exception as exc:  # pragma: no cover - keep the suite going
             LOGGER.warning("baseline %s failed: %s", name, exc)
             index["runs"][name] = {"label": M_LABELS[name], "error": str(exc)}
+
+    # 3) statistics: M7-vs-baseline same-index pooled deltas + Holm correction (§18.3).
+    stats_seed = int(cfg.get("seed", 42))
+    stats_nboot = int(cfg.get("stats", {}).get("n_boot", 1000))
+    deltas_path = _paired_delta_statistics(out, index, seed=stats_seed, n_boot=stats_nboot)
+    if deltas_path is not None:
+        index["paired_deltas"] = str(deltas_path)
 
     if bool(cfg.get("ablation", {}).get("enabled", True)):
         index["ablations"] = _run_ablation_suites(cfg, data_dir, out, kstar)

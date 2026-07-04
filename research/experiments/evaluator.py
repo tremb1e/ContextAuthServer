@@ -28,9 +28,12 @@ import torch
 from torch import Tensor, nn
 
 from research import N_SCENARIOS, SCENARIOS
-from research.datasets.splits import USER_COL, WINDOW_COL
+from research.datasets.splits import SESSION_COL, USER_COL, WINDOW_COL
 from research.experiments._data import DatasetBundle, scene_to_index
 from research.models.moe import MoEAuthenticator
+from research.utils.logging import get_logger
+
+LOGGER = get_logger("research.evaluator")
 
 
 @dataclass
@@ -44,6 +47,20 @@ class EvalResult:
         scenes: The matched weak-label scenario id for each pair.
         n_genuine: Number of genuine pairs.
         n_impostor: Number of impostor pairs.
+        query_window_ids: Per-pair query ``window_id`` (SRV-4) — the genuine test
+            window for genuine pairs, the impostor window for impostor pairs. Lets
+            scores be redrawn / event streams rebuilt post-hoc.
+        impostor_user_ids: Per-pair impostor source ``user_id`` (``""`` for
+            genuine pairs).
+        session_ids: Per-pair query ``session_id`` (the test session for genuine
+            pairs, the impostor window's session for impostor pairs).
+        n_test_users: Distinct users present in the test split (SRV-5).
+        n_evaluated_users: Test users that actually contributed a genuine pair
+            (had an enroll prototype).
+        dropped_users_no_enroll: Test users silently dropped for lack of any
+            enroll (train/val) prototype.
+        n_skipped_impostor_pairs_no_enroll: Impostor pairs skipped because the
+            attacked user had no enroll prototype.
         router_probs_mean: Mean dense router distribution over query windows
             (length 7; empty for dense models).
         expert_utilization: Fraction of query windows for which each expert is in
@@ -59,6 +76,13 @@ class EvalResult:
     scenes: list[str]
     n_genuine: int
     n_impostor: int
+    query_window_ids: list[str] = field(default_factory=list)
+    impostor_user_ids: list[str] = field(default_factory=list)
+    session_ids: list[str] = field(default_factory=list)
+    n_test_users: int = 0
+    n_evaluated_users: int = 0
+    dropped_users_no_enroll: list[str] = field(default_factory=list)
+    n_skipped_impostor_pairs_no_enroll: int = 0
     router_probs_mean: list[float] = field(default_factory=list)
     expert_utilization: list[float] = field(default_factory=list)
     expert_scene_matrix: list[list[float]] = field(default_factory=list)
@@ -218,20 +242,35 @@ def evaluate(model: nn.Module, bundle: DatasetBundle, data_dir: str | Path) -> E
     labels: list[int] = []
     users: list[str] = []
     scenes: list[str] = []
+    query_window_ids: list[str] = []
+    impostor_user_ids: list[str] = []
+    session_ids: list[str] = []
+
+    # SRV-5: per-user evaluation coverage. A test user with no enroll prototype is
+    # silently unevaluable (no genuine pair); count and warn instead of dropping
+    # it invisibly.
+    test_users = set(test_meta[USER_COL].astype(str)) if USER_COL in test_meta else set()
+    dropped_users: set[str] = set()
+    all_sessions = all_meta[SESSION_COL].astype(str).tolist() if SESSION_COL in all_meta else [""] * len(all_meta)
 
     # Genuine pairs: each test (query) window vs its own user's prototype.
     for row in range(test_emb.shape[0]):
         user = str(test_meta.loc[row, USER_COL])
         proto = prototypes.get(user)
         if proto is None:  # user had no enroll windows -> cannot form a genuine pair
+            dropped_users.add(user)
             continue
         scene = str(test_meta.loc[row, "weak_label_top1"]) if "weak_label_top1" in test_meta else SCENARIOS[0]
         scores.append(_cosine(test_emb[row], proto))
         labels.append(1)
         users.append(user)
         scenes.append(scene)
+        query_window_ids.append(str(test_meta.loc[row, WINDOW_COL]) if WINDOW_COL in test_meta else "")
+        impostor_user_ids.append("")
+        session_ids.append(str(test_meta.loc[row, SESSION_COL]) if SESSION_COL in test_meta else "")
 
     # Impostor pairs: matched impostor window vs the ATTACKED user's prototype.
+    n_skipped_impostor_pairs_no_enroll = 0
     ip_path = Path(data_dir) / "impostor_pairs.parquet"
     if ip_path.exists():
         pairs = pd.read_parquet(ip_path)
@@ -239,6 +278,7 @@ def evaluate(model: nn.Module, bundle: DatasetBundle, data_dir: str | Path) -> E
             attacked = str(pair["genuine_user_id"])
             proto = prototypes.get(attacked)
             if proto is None:
+                n_skipped_impostor_pairs_no_enroll += 1
                 continue
             iwin = str(pair["impostor_window_id"])
             irow = global_win_to_row.get(iwin)
@@ -248,6 +288,18 @@ def evaluate(model: nn.Module, bundle: DatasetBundle, data_dir: str | Path) -> E
             labels.append(0)
             users.append(attacked)
             scenes.append(str(pair["scene"]))
+            query_window_ids.append(iwin)
+            impostor_user_ids.append(str(pair["impostor_user_id"]))
+            session_ids.append(all_sessions[irow] if irow < len(all_sessions) else "")
+
+    dropped_sorted = sorted(dropped_users)
+    if dropped_sorted:
+        LOGGER.warning(
+            "evaluate: %d/%d test users have no enroll prototype and were dropped: %s",
+            len(dropped_sorted), len(test_users), dropped_sorted,
+        )
+    if n_skipped_impostor_pairs_no_enroll:
+        LOGGER.warning("evaluate: skipped %d impostor pairs (attacked user had no enroll)", n_skipped_impostor_pairs_no_enroll)
 
     diag = _router_diagnostics(model, bundle)
     return EvalResult(
@@ -257,5 +309,12 @@ def evaluate(model: nn.Module, bundle: DatasetBundle, data_dir: str | Path) -> E
         scenes=scenes,
         n_genuine=int(sum(1 for lbl in labels if lbl == 1)),
         n_impostor=int(sum(1 for lbl in labels if lbl == 0)),
+        query_window_ids=query_window_ids,
+        impostor_user_ids=impostor_user_ids,
+        session_ids=session_ids,
+        n_test_users=len(test_users),
+        n_evaluated_users=len(test_users) - len(dropped_sorted),
+        dropped_users_no_enroll=dropped_sorted,
+        n_skipped_impostor_pairs_no_enroll=n_skipped_impostor_pairs_no_enroll,
         **diag,  # type: ignore[arg-type]
     )

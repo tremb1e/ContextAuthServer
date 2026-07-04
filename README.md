@@ -12,13 +12,19 @@ The Android client lives in the sibling directory:
 ## Layout
 
 ```text
-app/                    FastAPI application, schema validation, rules, storage
-tests/                  Pytest suite
-tools/                  sample ingest, e2e, Docker smoke, load scripts
-data/                   local runtime data and test data
+app/                    FastAPI ingest service: schema validation, rules, storage
+research/               offline ML experiment layer (MoE authenticator); conda env
+                        hmog_1dcnn, NOT run in the ingest container. See research/README.md
+deploy/                 production deployment (compose + real data root deploy/data/paper);
+                        authoritative for production. See deploy/README.md
+docs/                   maintainer docs; ContextAuthServer_服务端说明.md is the
+                        authoritative current-state reference (contract, privacy, data state)
+tests/                  Pytest suite for the ingest service (base env)
+tools/                  sample ingest, e2e, Docker smoke, load, event_detail sanitizer scripts
+data/                   local runtime data and test fixtures (gitignored, synthetic)
 logs/                   local server logs
 vendor/wheels/          offline Python wheels for Docker builds
-docker-compose.yml      canonical local compose file
+docker-compose.yml      LOCAL dev/integration compose ONLY — production uses deploy/docker-compose.yml
 ```
 
 ## Local Python

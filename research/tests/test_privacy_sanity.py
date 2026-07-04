@@ -9,6 +9,10 @@ Asserts:
 * no batch node leaks forbidden content (no password node, no surviving text
   field) — checked via the pipeline's own defensive
   :func:`research.preprocessing.quality._has_privacy_violation`;
+* no per-event ``event_detail`` carries the text-length / keystroke telemetry
+  keys, and no text event carries a non-(-1) cursor index (SRV-1 red-line — a
+  regression guard so the generator / on-disk data never re-grows the side
+  channel);
 * the forbidden ``<EDITABLE_TEXT_DROPPED>`` placeholder sentinel appears in NO
   on-disk pipeline artifact (raw batch JSON, windows parquet, split parquets);
 * the on-disk parquet artifacts carry no free-text column values (their string
@@ -30,6 +34,25 @@ _VALID_TASKS = set(SCENARIOS)
 _PLACEHOLDER_SENTINEL = "<EDITABLE_TEXT_DROPPED>"
 # Text keys that must never carry a surviving value on disk.
 _FORBIDDEN_TEXT_KEYS = ("text", "text_redacted", "content_desc_redacted", "window_title_redacted")
+# event_detail red-line (SRV-1), encoded independently of app.schemas as a guard.
+_FORBIDDEN_EVENT_DETAIL_KEYS = frozenset(
+    {
+        "before_text_length",
+        "text_total_length",
+        "content_description_length",
+        "text_entry_count",
+        "added_count",
+        "removed_count",
+    }
+)
+_TEXT_TELEMETRY_EVENT_TYPES = frozenset(
+    {
+        "TYPE_VIEW_TEXT_CHANGED",
+        "TYPE_VIEW_TEXT_SELECTION_CHANGED",
+        "TYPE_VIEW_TEXT_TRAVERSED_AT_MOVEMENT_GRANULARITY",
+    }
+)
+_TEXT_INDEX_KEYS = ("from_index", "to_index", "item_count", "current_item_index")
 
 
 def test_synthetic_records_satisfy_schema_contract(synthetic_dir: Path) -> None:
@@ -58,6 +81,21 @@ def test_no_forbidden_node_content(synthetic_dir: Path) -> None:
                 for key in _FORBIDDEN_TEXT_KEYS:
                     assert node.get(key) in (None, ""), f"node leaks {key}={node.get(key)!r}"
                 assert node.get("password") is False
+
+
+def test_no_event_detail_text_telemetry(synthetic_dir: Path) -> None:
+    """No loaded batch's event_detail re-grows the text-length / cursor side channel."""
+    for batch in load_batches(synthetic_dir):
+        for event in batch.get("context_events", []):
+            detail = event.get("event_detail")
+            if not isinstance(detail, dict):
+                continue
+            leaked = _FORBIDDEN_EVENT_DETAIL_KEYS & detail.keys()
+            assert not leaked, f"event_detail leaks {sorted(leaked)} in batch {batch['batch_id']}"
+            if event.get("event_type") in _TEXT_TELEMETRY_EVENT_TYPES:
+                for key in _TEXT_INDEX_KEYS:
+                    value = detail.get(key)
+                    assert value in (None, -1), f"text event leaks {key}={value!r} in batch {batch['batch_id']}"
 
 
 def test_no_placeholder_sentinel_in_on_disk_artifacts(

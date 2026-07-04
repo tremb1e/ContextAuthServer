@@ -14,6 +14,8 @@ Asserts (against small synthetic batches):
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import numpy as np
 import pandas as pd
 
@@ -28,7 +30,15 @@ from research.preprocessing.sessionize import sessionize, session_summary
 from research.preprocessing.windowing import make_windows
 
 
-def _tiny_batch(batch_id: str, base_ns: int, start_wall_ms: int, n: int = 40) -> dict:
+def _tiny_batch(
+    batch_id: str,
+    base_ns: int,
+    start_wall_ms: int,
+    n: int = 40,
+    *,
+    package: str = "com.example.app",
+    session_id: str = "up-sess",
+) -> dict:
     """Build a minimal batch dict with ``n`` accel samples at 100 Hz."""
     period = 10_000_000  # 10 ms
     samples = [
@@ -46,8 +56,8 @@ def _tiny_batch(batch_id: str, base_ns: int, start_wall_ms: int, n: int = 40) ->
     return {
         "batch_id": batch_id,
         "device_id": "dev1",
-        "session_id": "up-sess",
-        "app_package_name": "com.example.app",
+        "session_id": session_id,
+        "app_package_name": package,
         "collection_source": "BUILTIN_TASK",
         "base_elapsed_nanos": base_ns,
         "started_at_wall_millis": start_wall_ms,
@@ -109,3 +119,62 @@ def test_make_windows_bounds_and_membership(synthetic_dir) -> None:
         assert ctx["user_id"] == ctx["device_id"]  # device_id is the only identity
         imu: pd.DataFrame = ctx["imu_samples"]
         assert not imu.empty, "a yielded window must contain >=1 sensor sample"
+
+
+def test_sessionize_cuts_on_app_change() -> None:
+    """SRV-2: a foreground app change cuts a new session (same uploaded session).
+
+    Two contiguous batches (no gap, no restart, same uploaded session id, same
+    day) that differ only in ``app_package_name`` must split into two analysis
+    sessions; two batches with the same package stay one session.
+    """
+    # Contiguous in both clocks so ONLY the app change can be a boundary.
+    b1 = _tiny_batch("b1", base_ns=1_000_000_000, start_wall_ms=1_000_000, package="com.app.one")
+    b2 = _tiny_batch("b2", base_ns=1_400_000_000, start_wall_ms=1_000_400, package="com.app.two")
+    sessioned = sessionize(align_batches([b1, b2]), gap_min=10.0)
+    assert sessioned["session_id"].nunique() == 2, "an app change must cut a new session"
+    assert bool(sessioned["app_change"].any()), "the app-change boundary marker must be set"
+
+    same = _tiny_batch("b3", base_ns=1_400_000_000, start_wall_ms=1_000_400, package="com.app.one")
+    sessioned_same = sessionize(align_batches([b1, same]), gap_min=10.0)
+    assert sessioned_same["session_id"].nunique() == 1, "same package must stay one session"
+
+
+def test_make_windows_package_bucket_is_window_own_mode(synthetic_dir) -> None:
+    """SRV-2: each window's package_bucket is the mode of its OWN IMU samples."""
+    batches = list(load_batches(synthetic_dir))
+    sessioned = sessionize(align_batches(batches), gap_min=10.0)
+    windows = make_windows(sessioned, index_batches(batches), window_size_sec=5.0, stride_sec=1.0)
+    assert windows
+    for ctx in windows:
+        imu = ctx["imu_samples"]
+        window_mode = str(imu["app_package_name"].mode().iloc[0])
+        assert ctx["package_bucket"] == window_mode
+        # With the sessionize app-change boundary each session is single-package,
+        # so the window is in fact package-pure.
+        assert set(imu["app_package_name"].astype(str)) == {ctx["package_bucket"]}
+
+
+def test_make_windows_emits_only_full_length() -> None:
+    """SRV-14: only full-length windows are emitted (no sub-window tail residuals)."""
+    # One 7.5s batch (750 samples @100Hz); session-relative span ~7.49s.
+    batch = _tiny_batch("b1", base_ns=1_000_000_000, start_wall_ms=1_000_000, n=750)
+    sessioned = sessionize(align_batches([batch]), gap_min=10.0)
+    windows = make_windows(sessioned, index_batches([batch]), window_size_sec=5.0, stride_sec=1.0)
+    # Full-window bound: starts at 0,1,2,3s (start+5s <= 7.49s+1s); NOT the old
+    # residual tail up to ~7.49s.
+    assert len(windows) == 4
+    for ctx in windows:
+        span_ns = int(ctx["imu_samples"]["session_elapsed_ns"].max() - ctx["imu_samples"]["session_elapsed_ns"].min())
+        assert span_ns >= 4_000_000_000, f"residual sub-length window: {span_ns/1e9:.2f}s"
+
+
+def test_sessionize_day_id_uses_study_timezone() -> None:
+    """SRV-12: day_id is the study-timezone calendar day, not UTC."""
+    # 2026-07-04 20:00 UTC == 2026-07-05 04:00 Asia/Shanghai (crosses local day).
+    wall_ms = int(datetime(2026, 7, 4, 20, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    frame = align_batches([_tiny_batch("b1", base_ns=1_000_000_000, start_wall_ms=wall_ms)])
+    cn = sessionize(frame, gap_min=10.0)  # default study_timezone == Asia/Shanghai
+    assert set(cn["day_id"]) == {"2026-07-05"}
+    utc = sessionize(frame, gap_min=10.0, study_timezone="UTC")
+    assert set(utc["day_id"]) == {"2026-07-04"}

@@ -74,6 +74,10 @@ class SplitTensors:
         confidence: Per-window weak-label confidence ``[N]``.
         session_ids: Integer session ids ``[N]`` (dense-coded).
         hash_ids: Integer per-window hash ids ``[N]`` for the hash router.
+        succ_idx: Time-successor row index ``[N]`` (long): ``succ_idx[i] == i+1``
+            iff row ``i+1`` is the same session's next (time-adjacent) window, else
+            ``-1``. Rows within a split are contiguous and time-ordered per session
+            (SRV-7), so consecutive same-session rows are true adjacent windows.
         meta: The aligned metadata frame (string ids, scene, etc.).
     """
 
@@ -83,6 +87,7 @@ class SplitTensors:
     confidence: Tensor
     session_ids: Tensor
     hash_ids: Tensor
+    succ_idx: Tensor
     meta: pd.DataFrame
 
 
@@ -162,6 +167,7 @@ class DatasetBundle:
                 confidence=torch.zeros((0,), dtype=torch.float32),
                 session_ids=empty_i,
                 hash_ids=empty_i,
+                succ_idx=empty_i,
                 meta=pd.DataFrame(),
             )
 
@@ -189,6 +195,23 @@ class DatasetBundle:
             dtype=torch.long,
         )
 
+        # Time-successor index (SRV-7): link each row to the next row iff it is
+        # the same session's immediately-following (time-ordered) window. Rows of
+        # one session are contiguous and ordered by window/start time on disk, so
+        # row i+1 is i's true adjacent window. A monotone start-time guard (when
+        # available) ensures the link only ever points forward in time.
+        n_rows = features.shape[0]
+        succ_idx = torch.full((n_rows,), -1, dtype=torch.long)
+        if n_rows >= 2:
+            same_session = session_ids[1:] == session_ids[:-1]
+            if "start_elapsed_ns" in frame.columns:
+                start_ns = torch.tensor(
+                    frame["start_elapsed_ns"].astype(float).to_numpy(), dtype=torch.float64
+                )
+                same_session = same_session & (start_ns[1:] >= start_ns[:-1])
+            next_positions = torch.arange(1, n_rows, dtype=torch.long)
+            succ_idx[:-1] = torch.where(same_session, next_positions, torch.full_like(next_positions, -1))
+
         meta = frame[[c for c in (WINDOW_COL, USER_COL, SESSION_COL, "day_id", "weak_label_top1") if c in frame.columns]].copy()
         meta = meta.reset_index(drop=True)
         return SplitTensors(
@@ -198,6 +221,7 @@ class DatasetBundle:
             confidence=confidence,
             session_ids=session_ids,
             hash_ids=hash_ids,
+            succ_idx=succ_idx,
             meta=meta,
         )
 

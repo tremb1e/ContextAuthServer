@@ -69,7 +69,8 @@ research/
   reporting/                   plots, tables, report
   scripts/                     generate_synthetic_data, run_preprocess, build_datasets,
                                run_experiment, run_all_experiments, make_report, export_artifact_bundle
-  tests/                       11 pytest files + conftest (tiny synthetic fixture, session-scoped)
+  tests/                       21 pytest files + conftest (tiny synthetic fixture,
+                               session-scoped); 114 test cases green (conda hmog_1dcnn)
 ```
 
 ### Key invariants (enforced in code, checked by tests)
@@ -88,8 +89,11 @@ research/
   individual windows — so adjacent overlapping windows can't straddle a split. The
   builder asserts every `split_manifest.leakage_check` is True (raises otherwise), and
   enroll (train+val) / query (test) sessions are disjoint for prototype/cosine eval.
-- **Matched impostors, user-disjoint.** Each genuine test window is compared against
-  impostor windows from *other* users with the same weak-label scene.
+- **Matched impostors, user-disjoint, test-split-only.** Each genuine test window is
+  compared against impostor windows from *other* users with the same weak-label scene.
+  *(2026-07-05 SRV-6: the impostor pool is drawn from the **held-out test split only** —
+  never train/val — and `split_manifest` records `impostor_windows_test_only` so the
+  restriction is auditable.)*
 - **Frozen `k*`.** The top-k `1..7` sweep selects `k*` on **validation** (smallest-cost
   `k` whose EER is not significantly worse than the best), then the test EER is read
   once at that `k*`.
@@ -182,8 +186,10 @@ $PY -m research.scripts.make_report \
 $PY -m research.scripts.export_artifact_bundle --out data/artifact_bundle
 ```
 
-Add `--smoke` to `run_experiment` / `run_all_experiments` to shrink nets/epochs for a
-fast dry run. The default config already trains for only a couple of epochs.
+Add `--smoke` to `run_experiment` / `run_all_experiments` to shrink nets/epochs/data for
+a fast CPU dry run (the trainer caps smoke epochs at ≤2, so `pytest` stays fast). The
+default config now trains for the **formal `epochs=100`** (2026-07-05 SRV-9); omit
+`--smoke` only when you actually want a full-budget run.
 
 ---
 
@@ -214,30 +220,39 @@ each is a *representative* minimal implementation, not a placeholder:
    the per-snapshot valid-bounds bounding box, unit-agnostic. See
    `docs/ContextAuthServer_服务端说明.md` §8.2.)*
 
-3. **Smoke-scale training.** Default `epochs=2`, small nets, small batches — chosen so
-   the whole suite runs quickly on CPU. This is enough to exercise every code path and
-   produce well-formed artifacts, but the models are **not** converged; absolute EERs are
-   not meaningful, only the plumbing and relative structure are.
+3. **Training scale — now formal by default (2026-07-05 SRV-9).** The default is now
+   `training.epochs=100` (the formal paper magnitude), with config propagation fixed so
+   the value actually reaches the trainer. `--smoke` (or `runtime.smoke=true`) shrinks
+   nets/epochs/data for a fast CPU dry run (smoke epochs capped at ≤2); the test suite
+   runs in smoke. On the current single-user real data absolute EERs are still not
+   meaningful (see #1), but the training *budget* is no longer a documented reduction.
 
 4. **Approximate capacity match (M2).** M2's dense width is hand-tuned to be *near* the
    M7 top-k\* MoE parameter count, not an exact FLOP/param solve. The actual parameter
    counts are recorded in each run's `metrics.json` (`param_count`,
    `active_param_count`) so the residual capacity gap is auditable.
 
-5. **Event-level metrics are minimal.** `time_to_detect` and `false_alarms_per_hour`
-   are computed at the **window/event level** over the pooled score stream (documented in
-   `experiments/metrics.py`), not with a full k-of-n / EWMA detection policy selected on
-   validation. They are directionally useful, not deployment-grade.
+5. **Event-level detection metrics — FIXED (2026-07-05 SRV-4).** `time_to_detect` /
+   `false_alarms_per_hour` are now derived through an explicit **detection policy**
+   (k-of-n / EWMA over the per-window score stream) alongside `FRR@FAR` and `FAR@FRR`
+   operating points; the per-pair scores are persisted so the policy is auditable
+   (`experiments/metrics.py`, `test_metrics_operating_points`). On single-user data the
+   absolute values are still not deployment conclusions, but the metric machinery is no
+   longer a reduction.
 
-6. **By-user bootstrap on the per-user EER vector.** `bootstrap_ci` resamples the
-   **per-user** EER vector (the unit is the user, so it IS a by-user bootstrap) rather
-   than resampling users → rebuilding all genuine/impostor pairs → recomputing the pooled
-   metric each iteration. With the tiny synthetic user counts here, paired significance
-   tests (`paired_delta`, Holm) have limited power. Impostors stay scene/user-matched.
+6. **Bootstrap protocol — FIXED (2026-07-05 SRV-3).** `pooled_bootstrap_ci` now
+   implements the §18.3 primary protocol: resample **users** with replacement → rebuild
+   the genuine + matched-impostor pairs → recompute the **pooled** metric each replicate;
+   the M7-vs-baseline paired delta reuses the **same** user-resample index matrix
+   (`user_resample_indices`) with Holm correction (`test_bootstrap_protocol`). The old
+   per-user-EER-vector `bootstrap_ci` is retained only as a labelled *secondary* report.
+   Statistical power is now bounded by the (here, single) real user count, not by the
+   estimator.
 
-7. **ROC "curve" figure.** The runner persists pooled EER/AUC, not the full per-pair
-   score vectors, so `roc_curves` renders ROC-AUC **per baseline** as a bar chart proxy
-   rather than redrawing true ROC curves (documented in `reporting/plots.py`).
+7. **ROC curves — FIXED (2026-07-05 SRV-4).** The runner now persists the per-pair
+   genuine/impostor score vectors, so `roc_curves` sweeps thresholds and draws **true ROC
+   curves** per baseline instead of the former ROC-AUC bar-chart proxy
+   (`reporting/plots.py`).
 
 8. **Automatic ablation drivers.** `run_all_experiments` now writes
    `feature_ablation.csv`, `privacy_ablation.csv`, and `sensor_channel_ablation.csv`

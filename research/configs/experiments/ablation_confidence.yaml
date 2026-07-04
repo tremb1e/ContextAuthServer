@@ -1,0 +1,33 @@
+# Ablation: weak-label confidence threshold (spec §9.5, §2.3, RQ4/RQ7).
+# Sweeps the hard gate below which a window's KL router supervision is dropped
+# (its identity / L_auth contribution is untouched). This is a LOSS-side gate on
+# the continuous weak-label confidence — no relabelling / dataset rebuild — so it
+# runs the formal learned weak-supervised MoE (M7) directly on the source data.
+#
+#   weak_conf_threshold = 0.0  -> ungated (identical to the default M7, no-op).
+#   weak_conf_threshold = 0.2  -> drop KL supervision on the least-confident windows.
+#   weak_conf_threshold = 0.4  -> stricter gate.
+#   weak_conf_threshold = 0.6  -> only high-confidence windows supervise routing.
+#
+# This file is documentary: the sweep is driven programmatically by
+# research.experiments.runner._run_ablation_suites (confidence suite), which
+# writes confidence_ablation.csv. The base method for every level is the formal
+# M7 (learned router at the frozen k*).
+model:
+  kind: moe
+  router: learned
+  top_k: "__kstar__"
+features:
+  mode: ui_sensor
+
+ablation:
+  dimension: weak_conf_threshold
+  values:
+    - name: thr_0.0
+      weak_conf_threshold: 0.0
+    - name: thr_0.2
+      weak_conf_threshold: 0.2
+    - name: thr_0.4
+      weak_conf_threshold: 0.4
+    - name: thr_0.6
+      weak_conf_threshold: 0.6

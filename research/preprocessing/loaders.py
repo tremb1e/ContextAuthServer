@@ -94,7 +94,26 @@ def validate_batch_keys(batch: dict[str, Any]) -> dict[str, Any]:
     return batch
 
 
-def _iter_batch_files(input_dir: Path) -> Iterator[Path]:
+def iter_device_ids(input_dir: PathLike) -> list[str]:
+    """List device ids (``devices/<device_id>/`` subdirs) in sorted order.
+
+    Used to shard preprocessing per device (SRV-11): devices are independent
+    through align / sessionize / window, so processing them one at a time bounds
+    peak memory to a single device without changing the windowed output.
+
+    Args:
+        input_dir: Dataset root (contains ``devices/``).
+
+    Returns:
+        Sorted device id strings (empty if there is no ``devices/`` dir).
+    """
+    devices_dir = Path(input_dir) / "devices"
+    if not devices_dir.is_dir():
+        return []
+    return sorted(p.name for p in devices_dir.iterdir() if p.is_dir())
+
+
+def _iter_batch_files(input_dir: Path, device_id: str | None = None) -> Iterator[Path]:
     """Yield accepted batch JSON files under ``input_dir/devices``.
 
     Skips ``*.meta.json`` sidecars and anything under a ``by_category``
@@ -102,12 +121,18 @@ def _iter_batch_files(input_dir: Path) -> Iterator[Path]:
 
     Args:
         input_dir: Dataset root that contains a ``devices/`` subtree.
+        device_id: If given, restrict to that device's subtree (SRV-11 sharding).
 
     Yields:
         Paths to batch JSON files, in sorted order for determinism.
     """
     devices_dir = input_dir / "devices"
-    search_root = devices_dir if devices_dir.is_dir() else input_dir
+    if device_id is not None:
+        search_root = devices_dir / device_id
+    else:
+        search_root = devices_dir if devices_dir.is_dir() else input_dir
+    if not search_root.is_dir():
+        return
     for path in sorted(search_root.rglob("*.json")):
         name = path.name
         if name.endswith(".meta.json"):
@@ -117,7 +142,7 @@ def _iter_batch_files(input_dir: Path) -> Iterator[Path]:
         yield path
 
 
-def load_batches(input_dir: PathLike, *, strict: bool = True) -> Iterator[dict[str, Any]]:
+def load_batches(input_dir: PathLike, *, strict: bool = True, device_id: str | None = None) -> Iterator[dict[str, Any]]:
     """Iterate validated raw batch dicts from an on-disk dataset root.
 
     Reads the ingest / synthetic ``devices/{device_id}/{date}/{batch_id}.json``
@@ -127,6 +152,7 @@ def load_batches(input_dir: PathLike, *, strict: bool = True) -> Iterator[dict[s
         input_dir: Dataset root (contains ``devices/``).
         strict: If True (default), raise on unreadable / invalid files. If
             False, silently skip them (useful for best-effort scans).
+        device_id: If given, only load that one device's batches (SRV-11 sharding).
 
     Yields:
         Validated raw batch dicts.
@@ -138,7 +164,7 @@ def load_batches(input_dir: PathLike, *, strict: bool = True) -> Iterator[dict[s
     root = Path(input_dir)
     if not root.exists():
         raise FileNotFoundError(f"input_dir does not exist: {root}")
-    for path in _iter_batch_files(root):
+    for path in _iter_batch_files(root, device_id=device_id):
         try:
             with path.open("r", encoding="utf-8") as handle:
                 batch = json.load(handle)

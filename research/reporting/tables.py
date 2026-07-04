@@ -201,11 +201,12 @@ def ablation_table(results_dir: str | Path) -> str:
         ("feature_ablation.csv", "feature"),
         ("privacy_ablation.csv", "privacy"),
         ("sensor_channel_ablation.csv", "sensor"),
+        ("confidence_ablation.csv", "confidence"),
     ):
         for row in _read_csv(root / filename):
             if row.get("error"):
                 continue
-            label = row.get("name") or row.get("channel") or row.get("privacy_level") or "--"
+            label = row.get("name") or row.get("channel") or row.get("privacy_level") or row.get("confidence_threshold") or "--"
             rows.append({"kind": kind, "label": label, "eer": row.get("eer", ""), "roc_auc": row.get("roc_auc", "")})
     if not rows:
         return "% ablation_table: no ablation CSVs found\n"

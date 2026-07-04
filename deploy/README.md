@@ -43,7 +43,7 @@ curl -fsS http://127.0.0.1:8000/metrics | head
 
 ## 关键说明
 - **端点仅 6 个**：`/health` `/ready` `/api/v1/config` `/api/v1/rules` `/api/v1/ingest` `/metrics`；无鉴权、无 dashboard、不解密（详见 `docs/ContextAuthServer_服务端说明.md`）。
-- **端口**：默认仅本机 `127.0.0.1:8000`。对外提供改 compose `ports` 为 `0.0.0.0:8000:8000`，并务必在前置反代启用 HTTPS/TLS（应用层不加密）。
+- **端口（2026-07-05 订正，DOC-5）**：`deploy/docker-compose.yml` 的 `ports` 默认即 **`0.0.0.0:8000:8000`**——**对外监听所有网卡，并非仅本机**。服务**无鉴权、应用层不加密**，因此对外暴露时**必须**用防火墙 / 白名单限制来源，或前置反向代理启用 HTTPS/TLS。**若只需本机访问，请把 `ports` 改为 `127.0.0.1:8000:8000`。**
 - **属主**：容器以非 root（`APP_UID/GID=1001`=宿主用户）运行，`deploy/data`、`deploy/logs` 文件属主即宿主用户，可直接读写。
 - **构建代理**：仅构建期使用 `192.168.128.2:9999`；镜像不持久化该代理。基础镜像 `python:3.11-slim-bookworm` 已在本机，pip 依赖来自 `vendor/wheels` 离线安装。
 - **研究实验层 `research/`** 不在此服务容器内运行（它是离线 ML 实验工具，用 conda env `hmog_1dcnn` 单独运行，见 `research/README.md`）。

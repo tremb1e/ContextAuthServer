@@ -43,6 +43,7 @@ from research.preprocessing.feature_extractors import (
     build_feature_columns,
     build_feature_manifest,
 )
+from research.preprocessing.sessionize import DEFAULT_STUDY_TIMEZONE
 from research.utils.logging import get_logger
 
 LOGGER = get_logger("research.datasets.builders")
@@ -158,26 +159,28 @@ def _users_of(df: pd.DataFrame, idx: list[int]) -> set[str]:
 
 
 def _build_impostors(df: pd.DataFrame, split: SplitResult, seed: int, n_per_genuine: int) -> ImpostorPairs:
-    """Sample matched impostors for the test split, per-user-disjoint pools.
+    """Sample matched impostors for the test split from HELD-OUT test windows.
 
-    For each tested genuine user, the impostor candidate pool is every window
-    from OTHER users across the whole dataset (train ∪ val ∪ test), so the pool
-    is user-level disjoint from the attacked user by construction.
+    For each tested genuine user, the impostor candidate pool is other users'
+    windows drawn from the TEST split only (SRV-6), never from train/val. This
+    keeps the query population consistent (genuine and impostor windows both come
+    from held-out test sessions) instead of scoring the genuine user against
+    windows the encoder was fitted on — which biased impostor scores optimistically
+    low. The pool stays user-level disjoint from the attacked user by construction.
 
     Args:
         df: The full window table.
-        split: The split result (test rows are attacked).
+        split: The split result (test rows are attacked AND form the pool).
         seed: Deterministic sampling salt.
         n_per_genuine: Impostor windows per genuine test window.
 
     Returns:
         The matched :class:`ImpostorPairs`.
     """
-    all_idx = list(df.index)
     return sample_matched_impostors(
         df,
         genuine_idx=split.test_idx,
-        pool_idx=all_idx,
+        pool_idx=list(split.test_idx),
         seed=seed,
         n_per_genuine=n_per_genuine,
     )
@@ -216,12 +219,18 @@ def _leakage_check(df: pd.DataFrame, split: SplitResult, impostors: ImpostorPair
     else:
         no_app_leak = True
 
+    # SRV-6: impostor windows must come from the held-out test split only. Empty
+    # pairs -> ⊆ any set -> vacuously True (same convention as impostor_pool_check).
+    test_windows = set(df.loc[split.test_idx, WINDOW_COL].astype(str)) if split.test_idx else set()
+    impostor_windows_test_only = set(impostors.impostor_window_ids).issubset(test_windows)
+
     return {
         "no_session_leak": bool(no_session_leak),
         "no_day_leak": bool(no_day_leak),
         "no_app_leak": bool(no_app_leak),
         "enroll_query_sessions_disjoint": bool(enroll_s.isdisjoint(test_s)),
         "impostor_pool_user_disjoint": bool(impostors.impostor_pool_disjoint()),
+        "impostor_windows_test_only": bool(impostor_windows_test_only),
     }
 
 
@@ -234,6 +243,7 @@ def build_dataset(
     seed: int = 42,
     n_impostor_per_genuine: int = 1,
     name: str | None = None,
+    study_timezone: str = DEFAULT_STUDY_TIMEZONE,
 ) -> Path:
     """Build a leakage-checked dataset from preprocessed windows.
 
@@ -246,6 +256,8 @@ def build_dataset(
         seed: Deterministic split / impostor-sampling salt.
         n_impostor_per_genuine: Impostor windows sampled per genuine test window.
         name: Dataset dir name; defaults to ``{protocol}__{feature_mode}``.
+        study_timezone: IANA timezone the preprocessed ``day_id`` was computed in;
+            recorded in the manifest as ``day_id_timezone`` (SRV-12).
 
     Returns:
         The dataset directory path.
@@ -305,6 +317,40 @@ def build_dataset(
             if n_users < 2
             else "no_impostor_pairs_no_cross_user_scene_match"
         )
+
+    # SRV-5: per-user coverage observation. A user in NO test split is never
+    # evaluated; a test user with NO enroll (train/val) session is silently
+    # dropped at eval (no prototype). Surfaced as manifest fields + warnings, NOT
+    # a hard build assert (the single-user smoke contract must still succeed).
+    train_u = _users_of(df, split.train_idx)
+    val_u = _users_of(df, split.val_idx)
+    test_u = _users_of(df, split.test_idx)
+    all_u = set(users)
+    never_tested_users = sorted(all_u - test_u)
+    no_enroll_users = sorted(test_u - (train_u | val_u))
+    user_coverage = {
+        "n_users": n_users,
+        "n_covered": len(test_u),
+        "covered_users": sorted(test_u),
+        "never_tested_users": never_tested_users,
+        "no_enroll_users": no_enroll_users,
+    }
+    if never_tested_users:
+        warnings.append(f"user_coverage_never_tested:{len(never_tested_users)}")
+    if no_enroll_users:
+        warnings.append(f"user_coverage_no_enroll:{len(no_enroll_users)}")
+
+    # SRV-6: seen-impostor observation. With no user-holdout protocol, impostor
+    # identities are in the training identity set — test EER is optimistic for
+    # authentication (§18.2: main claims read heldout users). Record always; only
+    # WARN for day/app-holdout protocols, where the "held-out" framing could
+    # otherwise mislead (leave_session_out enrolls+queries the same users by
+    # design, so it is not flagged there — keeping its manifest warning-free).
+    impostor_users_in_train_identity_set = bool(set(impostors.impostor_user_ids) & train_u) if has_impostor_pairs else False
+    holds_day_or_app = (DAY_COL in split.group_cols) or (APP_COL in split.group_cols)
+    if impostor_users_in_train_identity_set and holds_day_or_app:
+        warnings.append("impostor_users_in_train_identity_set")
+
     for warning in warnings:
         LOGGER.warning("dataset %s: %s", dataset_name, warning)
 
@@ -320,6 +366,9 @@ def build_dataset(
         "n_users": n_users,
         "has_impostor_pairs": bool(has_impostor_pairs),
         "impostor_pool_check_vacuous": bool(impostor_pool_check_vacuous),
+        "user_coverage": user_coverage,
+        "impostor_users_in_train_identity_set": impostor_users_in_train_identity_set,
+        "day_id_timezone": study_timezone,
         "warnings": warnings,
         "devices": sorted(set(df["device_id"].astype(str))) if "device_id" in df else [],
         "sessions": sorted(set(df[SESSION_COL].astype(str))),

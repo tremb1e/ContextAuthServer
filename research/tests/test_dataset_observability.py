@@ -72,3 +72,21 @@ def test_multi_user_dataset_has_no_degeneracy_warnings(split_manifest: dict) -> 
     assert split_manifest["has_impostor_pairs"] is True
     assert split_manifest["impostor_pool_check_vacuous"] is False
     assert split_manifest["warnings"] == []
+
+
+def test_multi_user_fixture_has_full_user_coverage(split_manifest: dict) -> None:
+    """SRV-5: per-user stratified leave_session_out covers every user on both sides."""
+    coverage = split_manifest["user_coverage"]
+    assert coverage["n_covered"] == split_manifest["n_users"]
+    assert coverage["never_tested_users"] == []
+    assert coverage["no_enroll_users"] == []
+
+
+def test_single_user_build_reports_coverage(tmp_path: Path) -> None:
+    """SRV-5: a single-user build exposes user_coverage without failing the build."""
+    windows = _windows_for(tmp_path / "one_user_cov", users=1, days=2, sessions_per_day=2)
+    ds_dir = build_dataset(windows, protocol="leave_session_out", out_dir=tmp_path / "dscov", feature_mode="ui_sensor")
+    manifest = _manifest(ds_dir)
+    assert manifest["user_coverage"]["n_users"] == 1
+    # A single user has multiple sessions -> still covered on both sides (k>=2).
+    assert manifest["user_coverage"]["n_covered"] == 1

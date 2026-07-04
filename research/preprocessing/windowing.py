@@ -2,7 +2,9 @@
 
 Each analysis session (from :mod:`research.preprocessing.sessionize`) is sliced
 into overlapping windows on the elapsed-time axis (default 5s window, 1s stride
-⇒ 4s overlap, ``_recon_spec.md`` §6.2). A window context bundles everything the
+⇒ 4s overlap, ``_recon_spec.md`` §6.2). Only FULL-length windows are emitted
+(the session tail no longer yields sub-window residuals that would deflate
+per-second rate features — SRV-14). A window context bundles everything the
 feature extractor / weak labeler / quality flags need:
 
 * provenance ids (``device_id, session_id, day_id, window_id, user_id,
@@ -16,7 +18,10 @@ feature extractor / weak labeler / quality flags need:
 
 ``user_id`` == ``device_id`` (the only stable identity in the contract; there
 is no user_id field — see ``_recon_spec.md`` §19). ``package_bucket`` is the
-foreground ``app_package_name`` (used as the leave-app-out bucket). No leakage
+foreground ``app_package_name`` of the window's OWN IMU samples (mode), the
+leave-app-out bucket (SRV-2). With the sessionize app-change boundary each
+session is single-package, so the window-level mode equals the session's, but
+computing it per window keeps ``make_windows`` correct on its own. No leakage
 column is read here.
 """
 
@@ -178,7 +183,6 @@ def make_windows(
         # and keeps each 5s scenario coherent.
         sub = sub.sort_values(["batch_order", "timestamp_elapsed_nanos"], kind="mergesort").reset_index(drop=True)
         day_id = str(sub["day_id"].iloc[0])
-        package_bucket = str(sub["app_package_name"].mode().iloc[0]) if not sub.empty else "unknown"
 
         session_rel, wall_anchor = _session_relative_axis(sub)
         sub = sub.assign(session_elapsed_ns=session_rel)
@@ -199,11 +203,19 @@ def make_windows(
         prev_snapshot: list[dict[str, Any]] | None = None
         window_index = 0
         start_ns = first_ns
-        while start_ns <= last_ns:
+        # Only emit FULL-length windows: the last window whose nominal end fits
+        # within the session's samples (a stride of slack). Session tails shorter
+        # than (window - stride) no longer produce sub-length residuals that were
+        # normalised by the nominal window_size, deflating evt_rate/touch_rate
+        # (SRV-14).
+        while start_ns + window_ns <= last_ns + stride_ns:
             end_ns = start_ns + window_ns
             mask = (rel >= start_ns) & (rel < end_ns)
             if mask.any():
                 imu_samples = sub.loc[mask].reset_index(drop=True)
+                # Per-window package bucket: the mode of the window's OWN IMU
+                # samples' app_package_name (SRV-2), not the whole session's.
+                package_bucket = str(imu_samples["app_package_name"].mode().iloc[0])
                 # Wall bounds from the actual in-window sample wall times (robust
                 # since wall time is monotonic across the session).
                 win_walls = wall_ms_arr[mask]

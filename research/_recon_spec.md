@@ -115,6 +115,7 @@ RQ1 UI structure helps? M0/M1/M7. RQ2 MoE vs dense (capacity-controlled)? M1/M2/
 - **Router/expert analysis:** weak-label top1/top-k dist, router entropy, expert-utilization entropy, per-scene expert-activation matrix, KL(router‖weak label), expert specialization score. **Stratified by protocol:** additionally under leave_app_out report weak-label dist drift, KL, per-scene activation (OOD routing robustness; avoid misattributing leave-app-out drop to encoder vs router weak-supervision failure).
 - **Statistics:** by-user bootstrap 95% CI; M7-vs-each-baseline paired delta; **Holm** multiple-comparison correction; scipy p-value if available else bootstrap delta CI; effect size + per-user/per-scene win rate; **main conclusions heldout-users only**.
 - **Bootstrap protocol (§18.3, fixed):** resample USERS with replacement → rebuild genuine/impostor pairs → recompute POOLED metrics (NOT mean of per-user EER); paired delta on same resample index; impostors stay matched (scene/package) within each bootstrap.
+  - _[2026-07-05 实现注记 · 不改契约原文]_ 本条已由 `experiments/bootstrap.py::pooled_bootstrap_ci` 落地（SRV-3）；README 里 minimal-working「per-user EER vector」向量法 documented-deviation 已退役、仅作 labelled secondary report 保留。RandomRouter「fixed-seed random logits」在 SRV-8 逐窗口实现下仍满足本规约，无需改。
 - **Per-run outputs (9.8):** config.yaml, metrics.json, metrics.csv, per_user_metrics.csv, per_scene_metrics.csv, expert_utilization.csv, expert_scene_matrix.csv, topk_sweep.csv, model.pt, logs/train.jsonl, run_context.json.
 
 ## 12. Reporting & plots (§十二)

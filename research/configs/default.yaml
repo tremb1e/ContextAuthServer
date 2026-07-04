@@ -10,6 +10,13 @@ preprocess:
   window_size_sec: 5  # window length (seconds)
   stride_sec: 1       # window stride (seconds) -> 4s overlap at default
   gap_min: 10         # session cut on inter-sample gap > this many minutes
+  study_timezone: Asia/Shanghai  # SRV-12: day_id / leave_day_out day = local
+                                 # calendar day in this zone (storage stays UTC)
+  min_session_seconds: 5.0       # APP-10-B: drop sessions with wall span < this
+                                 # before windowing (fragment 秒进秒出 sessions)
+  drop_self_app_windows: true    # APP-2-B: drop THIRD_PARTY windows whose
+                                 # foreground app is the collector itself
+  self_app_package: com.contextauth  # the collector's own package name
   # Scene/gold space == the app's own 7 task classes I0..I6 (identity; no 8->7
   # mapping). Legacy on-disk ids (I7 -> I6; C*/deleted-scan-I6 -> dropped) are
   # digested by research.canonical_scene_for_task — there is no mapping knob.
@@ -37,20 +44,28 @@ model:
   router: learned     # learned | fixed_rule | random | hash | package_only
 
 train:
-  epochs: 2
+  # Formal training defaults (SRV-9). Early stopping + best checkpoint make the
+  # epoch ceiling a safe upper bound; smoke runs shrink this via runtime.smoke=true
+  # (trainer caps epochs at <=2) or --smoke, so CI stays fast.
+  epochs: 100
   lr: 0.001
   batch_size: 64
-  early_stop_patience: 3
+  early_stop_patience: 10
 
 loss:
   lambda_scene: 1.0     # weight of router KL-to-weak-label term
   lambda_balance: 0.005 # load-balance weight (small)
   lambda_smooth: 0.1    # temporal-smoothness weight
   auth_kind: ce_proto   # ce_proto | triplet
+  weak_conf_threshold: 0.0  # §9.5/§2.3 KL confidence gate (0.0 == ungated no-op;
+                            # the confidence ablation sweeps {0.0,0.2,0.4,0.6})
 
 topk:
   sweep: [1, 2, 3, 4, 5, 6, 7]
   select_on: val        # k* chosen on validation, then frozen
+
+stats:
+  n_boot: 1000          # §18.3 pooled-metric bootstrap replicates (CI + paired delta)
 
 ablation:
   enabled: true         # run feature/privacy/sensor-channel ablations in run_all_experiments

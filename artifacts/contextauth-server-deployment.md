@@ -1,5 +1,7 @@
 # ContextAuth Server Image Deployment
 
+> **历史快照警示（2026-07-05，DOC-7）**：本文件描述的 tar 镜像（`contextauth/server:latest`，导出于 **2026-06-30**）为**旧契约镜像，不得用于现网**。它早于 2026-07-03 的 `CANONICAL{I0..I6} ∪ LEGACY` 任务契约与 2026-07-05 的 `event_detail` 隐私红线契约（SRV-1），因此会**拒收 I0..I6 金标批**、且**漏放 `event_detail` 禁用键**。**现行部署一律以 [`../deploy/README.md`](../deploy/README.md) + [`../deploy/docker-compose.yml`](../deploy/docker-compose.yml) 为准**（镜像 `contextauth/server:deploy`，须由当前源码重建重部署）。以下内容仅作历史 `docker save` / `docker load` 操作参考。
+
 Generated: 2026-06-30
 Image: contextauth/server:latest
 Image ID: sha256:5027854cabbe950e77668147be9bc15f9ebf258fa4a409f2b2d1ea657784888f

@@ -81,11 +81,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"data_dir    : {data_dir}")
     if ok:
         metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-        boot = metrics.get("eer_by_user_bootstrap", {})
+        pooled = metrics.get("eer_pooled_bootstrap", {})
+        by_user = metrics.get("eer_by_user_bootstrap", {})
         print(f"run_id      : {run_dir.name}")
         print(f"EER         : {metrics.get('eer')}")
         print(f"ROC-AUC     : {metrics.get('roc_auc')}")
-        print(f"by-user CI  : [{boot.get('ci_lo')}, {boot.get('ci_hi')}]")
+        print(f"pooled CI   : [{pooled.get('ci_lo')}, {pooled.get('ci_hi')}]  (§18.3 primary)")
+        print(f"by-user CI  : [{by_user.get('ci_lo')}, {by_user.get('ci_hi')}]  (secondary)")
+        print(f"FRR@FAR=1%  : {metrics.get('frr_at_far_1pct')}   detection: {metrics.get('detection_policy', {}).get('kind')}")
         print(f"pairs (g/i) : {metrics.get('n_genuine_pairs')}/{metrics.get('n_impostor_pairs')}")
         print(f"metrics.json: {metrics_path}")
     else:

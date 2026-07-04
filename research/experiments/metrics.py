@@ -83,6 +83,61 @@ def far_frr_at_threshold(
     return far, frr
 
 
+def frr_at_far(labels: Sequence[float], scores: Sequence[float], target_far: float) -> float:
+    """Return the FRR at the strictest operating point whose FAR <= ``target_far``.
+
+    §9.7 main metric. Uses the ROC curve (``fpr == FAR``, ``1 - tpr == FRR``) and
+    takes the CONSERVATIVE step operating point: among the ROC vertices with
+    ``FAR <= target_far`` it returns the smallest FRR (the largest admissible
+    FAR). Returns ``nan`` when the target FAR is unreachable (e.g. below the
+    impostor-count resolution) or the input is single-class.
+
+    Args:
+        labels: Binary labels (1 == genuine).
+        scores: Match scores (larger == genuine).
+        target_far: The FAR budget (e.g. 0.01 for FRR@FAR=1%).
+
+    Returns:
+        The FRR at that operating point (``nan`` if undefined/unreachable).
+    """
+    labels_arr = np.asarray(labels)
+    scores_arr = np.asarray(scores, dtype=float)
+    if len(np.unique(labels_arr)) < 2 or len(scores_arr) < 2:
+        return float("nan")
+    fpr, tpr, _ = roc_curve(labels_arr, scores_arr)
+    fnr = 1.0 - tpr
+    admissible = fpr <= float(target_far) + 1e-12
+    if not admissible.any():
+        return float("nan")
+    return float(fnr[admissible].min())
+
+
+def far_at_frr(labels: Sequence[float], scores: Sequence[float], target_frr: float) -> float:
+    """Return the FAR at the strictest operating point whose FRR <= ``target_frr``.
+
+    §9.7 main metric (the FRR-constrained dual of :func:`frr_at_far`): among the
+    ROC vertices with ``FRR <= target_frr`` it returns the smallest FAR.
+
+    Args:
+        labels: Binary labels (1 == genuine).
+        scores: Match scores (larger == genuine).
+        target_frr: The FRR budget (e.g. 0.05 for FAR@FRR=5%).
+
+    Returns:
+        The FAR at that operating point (``nan`` if undefined/unreachable).
+    """
+    labels_arr = np.asarray(labels)
+    scores_arr = np.asarray(scores, dtype=float)
+    if len(np.unique(labels_arr)) < 2 or len(scores_arr) < 2:
+        return float("nan")
+    fpr, tpr, _ = roc_curve(labels_arr, scores_arr)
+    fnr = 1.0 - tpr
+    admissible = fnr <= float(target_frr) + 1e-12
+    if not admissible.any():
+        return float("nan")
+    return float(fpr[admissible].min())
+
+
 def compute_eer_auc(labels: Sequence[float], scores: Sequence[float]) -> dict[str, float]:
     """Return ``{eer, roc_auc, pr_auc, threshold}`` for a score/label vector.
 

@@ -49,6 +49,80 @@ def _eer(metrics: dict[str, dict[str, Any]], name: str) -> str:
     return _fmt(metrics.get(name, {}).get("eer")) if name in metrics else "N/A"
 
 
+def _find_split_manifest(results_dir: Path, data_dir: Path | None) -> dict[str, Any]:
+    """Locate + load a ``split_manifest.json`` (data_dir first, else data/datasets)."""
+    manifest_path: Path | None = None
+    if data_dir is not None and (Path(data_dir) / "split_manifest.json").exists():
+        manifest_path = Path(data_dir) / "split_manifest.json"
+    else:
+        candidates = sorted(Path("data/datasets").glob("*/split_manifest.json")) if Path("data/datasets").exists() else []
+        manifest_path = candidates[0] if candidates else None
+    return json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path is not None else {}
+
+
+def _infer_provenance(manifest: dict[str, Any]) -> str:
+    """Infer ``synthetic`` / ``real`` data provenance from a split manifest (SRV-15).
+
+    Prefers an explicit ``data_provenance`` field; otherwise recomputes the
+    synthetic generator's deterministic device ids (a hash of a fixed
+    ``contextauth-synth-user`` prefix) — real device hashes never match it — so a
+    real-data run is never mislabelled "synthetic".
+    """
+    if not manifest:
+        return "unknown"
+    if manifest.get("data_provenance"):
+        return str(manifest["data_provenance"])
+    devices = [str(d) for d in manifest.get("devices", [])] or [str(u) for u in manifest.get("users", [])]
+    if not devices:
+        return "unknown"
+    try:
+        from research.scripts.generate_synthetic_data import _device_id_for_user
+    except Exception:  # pragma: no cover - generator always importable in-repo
+        return "unknown"
+    n = max(len(devices), int(manifest.get("n_users", len(devices)))) + 2
+    synthetic_ids = {_device_id_for_user(i, s) for s in {int(manifest.get("seed", 42)), 42, 0} for i in range(n)}
+    return "synthetic" if set(devices).issubset(synthetic_ids) else "real"
+
+
+def _provenance_summary_line(provenance: str) -> str:
+    """Return the conclusion-first data-provenance bullet for the executive summary."""
+    if provenance == "real":
+        return (
+            "- **数据来源（真实采集）**：本报告基于**真实采集数据**端到端跑通流水线，"
+            "效应量与显著性以真实数据为准；当前数据规模/覆盖度局限见第五节。"
+        )
+    if provenance == "synthetic":
+        return (
+            "- **严肃声明（合成数据）**：本报告基于**合成数据**跑通端到端流水线，"
+            "仅用于验证方法与工程正确性，**不能替代真实多用户实证结论**；"
+            "真实多用户数据下的效应量与显著性需在真机数据上复现。"
+        )
+    return (
+        "- **数据来源（未标注）**：本次运行未显式标注数据来源（provenance=unknown）；"
+        "若为合成数据，其结论仅证明流水线自洽，不代表真实世界效应。"
+    )
+
+
+def _pooled_ci(m: dict[str, Any]) -> dict[str, Any]:
+    """Return the primary pooled-bootstrap CI dict (fallback to by-user; SRV-3)."""
+    pooled = m.get("eer_pooled_bootstrap") or {}
+    if pooled and str(pooled.get("ci_lo")).lower() != "nan":
+        return pooled
+    return m.get("eer_by_user_bootstrap", {})
+
+
+def _undertraining_warnings(metrics: dict[str, dict[str, Any]]) -> list[str]:
+    """List baselines that hit the epoch ceiling without early-stopping (SRV-9)."""
+    flagged: list[str] = []
+    for name, m in metrics.items():
+        configured = m.get("epochs_configured")
+        run = m.get("epochs_run")
+        stopped = m.get("early_stopped")
+        if configured and run and int(run) >= int(configured) and not stopped and int(configured) > 2:
+            flagged.append(f"{name}(epochs_run={run}=上限)")
+    return flagged
+
+
 def _kstar(results_dir: Path) -> Any:
     """Return the frozen k* from ``topk_kstar.json`` (or ``None``)."""
     path = results_dir / "topk_kstar.json"
@@ -58,11 +132,12 @@ def _kstar(results_dir: Path) -> Any:
     return index.get("kstar")
 
 
-def _executive_summary(results_dir: Path, metrics: dict[str, dict[str, Any]]) -> list[str]:
+def _executive_summary(results_dir: Path, metrics: dict[str, dict[str, Any]], provenance: str) -> list[str]:
     """Build the conclusion-first Chinese executive-summary lines."""
     kstar = _kstar(results_dir)
     m7 = metrics.get("m7", {})
-    boot = m7.get("eer_by_user_bootstrap", {})
+    boot = _pooled_ci(m7)
+    ci_label = "池化自助法" if (m7.get("eer_pooled_bootstrap") and str(m7.get("eer_pooled_bootstrap", {}).get("ci_lo")).lower() != "nan") else "by-user 自助法"
     lines = [
         "## 一、执行摘要（结论先行）",
         "",
@@ -71,16 +146,17 @@ def _executive_summary(results_dir: Path, metrics: dict[str, dict[str, Any]]) ->
         f"- **最优专家数 $k^*$**：在**验证集**上冻结选出 $k^*={kstar}$，"
         "遵循与窗口长度搜索一致的“仅在验证/调参子集上选择、测试集只评一次”的纪律。",
         f"- **M7 等错误率 EER = {_fmt(m7.get('eer'))}**"
-        f"（by-user 自助法 95% CI = [{_fmt(boot.get('ci_lo'))}, {_fmt(boot.get('ci_hi'))}]，"
-        f"ROC-AUC = {_fmt(m7.get('roc_auc'))}）。",
+        f"（{ci_label} 95% CI = [{_fmt(boot.get('ci_lo'))}, {_fmt(boot.get('ci_hi'))}]，"
+        f"ROC-AUC = {_fmt(m7.get('roc_auc'))}；主口径为 §18.3 池化重采样自助法）。",
+        f"- **操作点（§9.7）**：FRR@FAR=1% = {_fmt(m7.get('frr_at_far_1pct'))}，"
+        f"FRR@FAR=5% = {_fmt(m7.get('frr_at_far_5pct'))}，FAR@FRR=5% = {_fmt(m7.get('far_at_frr_5pct'))}；"
+        f"检测策略（验证集选定、测试固定）= `{m7.get('detection_policy', {}).get('kind', 'raw')}`。",
         "- **与基线对比（EER，越低越好）**："
         f"M0 传感器-Dense={_eer(metrics, 'm0')}，M1 UI-Dense={_eer(metrics, 'm1')}，"
         f"M4 固定规则-top1={_eer(metrics, 'm4')}，M5 固定规则-top$k^*$={_eer(metrics, 'm5')}，"
         f"M6 仅认证-MoE={_eer(metrics, 'm6')}，M7={_eer(metrics, 'm7')}，"
-        f"M8 去包名={_eer(metrics, 'm8')}。",
-        "- **严肃声明（P0）**：本报告基于**合成数据**跑通端到端流水线，"
-        "仅用于验证方法与工程正确性，**不能替代真实多用户实证结论**；"
-        "真实多用户数据下的效应量与显著性需在真机数据上复现。",
+        f"M8 去包名={_eer(metrics, 'm8')}（M7-vs-基线同索引配对 delta 与 Holm 校正见 `paired_deltas.csv`）。",
+        _provenance_summary_line(provenance),
         "",
     ]
     return lines
@@ -178,14 +254,29 @@ def _expert_specialization(results_dir: Path, metrics: dict[str, dict[str, Any]]
     ]
 
 
-def _limitations_repro(results_dir: Path) -> list[str]:
+def _limitations_repro(results_dir: Path, metrics: dict[str, dict[str, Any]], provenance: str) -> list[str]:
     """Build the limitations + reproducibility closing sections."""
-    return [
+    if provenance == "real":
+        data_line = "- **真实数据**：结论以真实采集数据为准；受当前样本规模/用户覆盖度限制，认证类指标在单用户/少冒充对下可能退化为 N/A（见数据集概况的覆盖度字段）。"
+    elif provenance == "synthetic":
+        data_line = "- **合成数据（P0）**：结论仅证明流水线可运行与方法自洽，不代表真实世界效应。"
+    else:
+        data_line = "- **数据来源未标注**：若为合成数据，结论仅证明流水线自洽；请以 `--data-provenance` 显式标注以消除歧义。"
+    undertrained = _undertraining_warnings(metrics)
+    lines = [
         "## 五、局限性",
         "",
-        "- **合成数据（P0）**：结论仅证明流水线可运行与方法自洽，不代表真实世界效应。",
-        "- **最小可用实现**：TTD / 每小时误报为事件级最小实现；容量匹配（M2）为近似（记录参数量）；"
-        "频域特征用 numpy rfft；小数据下 by-user 自助法与配对显著性检验功效有限。",
+        data_line,
+    ]
+    if undertrained:
+        lines.append(
+            "- **欠训练风险（SRV-9）**：以下基线达到 epoch 上限且未触发早停，可能未收敛，建议提高 epochs 复跑："
+            + "、".join(undertrained)
+            + "。"
+        )
+    lines += [
+        "- **事件级检测**：TTD / 每小时误报 / 攻击检出率按 (用户,会话) 时间流计算，检测策略（raw/k-of-n/EWMA）在验证集选定后测试固定；"
+        "容量匹配（M2）为近似（记录参数量）；频域特征用 numpy rfft；小数据下自助法与配对显著性检验功效有限。",
         "- **任务体系（2026-07-03）**：金标/场景/专家 = App 原生 7 任务 `I0..I6`（1:1，恒等，无 8→7 映射）。"
         "旧盘数据经 legacy 重映射消化：`I7`→`I6`（手腕转动重编号）；旧 `I6` 空间采集（task_name=\"Scan, frame, and capture\"）"
         "与旧 `C0..C6` 一律置 `scene=None`、不计金标。弱标注规则为按新 7 类重键的启发式初版，质量校准属后续 P1 工作。",
@@ -194,15 +285,23 @@ def _limitations_repro(results_dir: Path) -> list[str]:
         "",
         "- 每次 run 保存：`config.yaml`、`metrics.json`、`metrics.csv`、`per_user_metrics.csv`、"
         "`per_scene_metrics.csv`、`expert_utilization.csv`、`expert_scene_matrix.csv`、`model.pt`、"
-        "`logs/train.jsonl`、`run_context.json`。",
+        "`logs/train.jsonl`、`run_context.json`；并落盘逐对分数 `scores.parquet`/`scores_val.parquet`/"
+        "`pair_scores.parquet` 与 `roc_points.csv`（供 ROC 重绘、§18.3 池化 CI 与同索引配对 delta 事后复算）。",
         "- 确定性种子、早停与最优 checkpoint；`run_context.json` 记录 python/torch/numpy 版本、"
-        "git commit、配置哈希与硬件信息。",
+        "git commit、配置哈希与硬件信息；`metrics.json` 记录 `epochs_run/epochs_configured/early_stopped`。",
         "- 复现命令：`build_datasets` → `run_all_experiments` → `make_report`。",
         "",
     ]
+    return lines
 
 
-def make_report(results_dir: str | Path, out_md: str | Path, *, data_dir: str | Path | None = None) -> Path:
+def make_report(
+    results_dir: str | Path,
+    out_md: str | Path,
+    *,
+    data_dir: str | Path | None = None,
+    data_provenance: str | None = None,
+) -> Path:
     """Render figures + LaTeX tables and write the Chinese ``report.md``.
 
     Args:
@@ -213,6 +312,9 @@ def make_report(results_dir: str | Path, out_md: str | Path, *, data_dir: str | 
         out_md: Destination path for ``report.md``.
         data_dir: Optional dataset dir (for the dataset summary + weak-label
             distribution figure).
+        data_provenance: Explicit ``"synthetic"`` / ``"real"`` override for the
+            data-source wording (SRV-15). ``None`` auto-infers from the split
+            manifest so a real-data run is never mislabelled "synthetic".
 
     Returns:
         The path to the written ``report.md``.
@@ -222,7 +324,11 @@ def make_report(results_dir: str | Path, out_md: str | Path, *, data_dir: str | 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig_dir = out_path.parent / "plots"
 
-    # 1) figures (skip-with-message on missing inputs).
+    # 0) data provenance (explicit override, else inferred from the split manifest).
+    manifest = _find_split_manifest(results, Path(data_dir) if data_dir else None)
+    provenance = str(data_provenance) if data_provenance else _infer_provenance(manifest)
+
+    # 1) figures (skip-with-message on missing inputs; each gets a Chinese .md note).
     written = plots.make_all_plots(results, fig_dir, data_dir=data_dir)
     produced = {name: [str(p) for p in paths] for name, paths in written.items() if paths}
 
@@ -236,25 +342,26 @@ def make_report(results_dir: str | Path, out_md: str | Path, *, data_dir: str | 
         "# ContextAuth 实验报告",
         "",
         "> 本报告由 `research.reporting.report.make_report` 自动生成；图表为出版级"
-        "（Times New Roman、无标题、无中文、PDF+PNG@300dpi），中文叙述仅在本 markdown 中。",
+        "（Times New Roman、无标题、无中文、PDF+PNG@300dpi），中文叙述仅在本 markdown 中；"
+        f"数据来源：**{provenance}**。",
         "",
     ]
-    lines += _executive_summary(results, metrics)
+    lines += _executive_summary(results, metrics, provenance)
     lines += _dataset_summary(results, Path(data_dir) if data_dir else None)
     lines += _rq_sections(results, metrics)
     lines += _expert_specialization(results, metrics)
 
-    # Figure index (only those actually produced).
+    # Figure index (only those actually produced; each has a sibling .md caption).
     lines += ["## 七、图表索引", ""]
     if produced:
         for name, paths in produced.items():
             pdfs = [p for p in paths if p.endswith(".pdf")]
-            lines.append(f"- `{name}`：{pdfs[0] if pdfs else paths[0]}")
+            lines.append(f"- `{name}`：{pdfs[0] if pdfs else paths[0]}（中文说明见 `plots/{name}.md`）")
     else:
         lines.append("- （无可用结果，图表全部跳过；请先运行 `run_all_experiments`。）")
     lines += ["", f"- LaTeX 表格：`{tex_path.name}`（需 `\\usepackage{{booktabs}}`）。", ""]
 
-    lines += _limitations_repro(results)
+    lines += _limitations_repro(results, metrics, provenance)
 
     out_path.write_text("\n".join(lines), encoding="utf-8")
     return out_path
